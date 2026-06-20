@@ -54,5 +54,15 @@ redis>=5.0.0                  # Redis 客户端（限流 + 成本统计持久化
 # ---- 开发 & 测试依赖 ----
 pytest>=8.0.0             # 测试框架
 pytest-asyncio>=0.23.0    # 异步测试支持（MCP Server 测试）
+pytest-cov>=5.0.0         # 代码覆盖率（--cov 参数）
+pytest-timeout>=2.3.0     # 测试超时控制
 httpx>=0.27.0             # HTTP 测试客户端（TestClient 备用）
 responses>=0.24.0         # HTTP Mock 库（GitHub App Webhook Mock）
+respx>=0.21.0             # HTTPX Mock 库（FastAPI 集成测试 mock）
+
+# ---- 代码质量工具 ----
+ruff>=0.5.0               # Linter + Formatter（替代 flake8 + isort）
+mypy>=1.10.0              # 静态类型检查
+bandit>=1.7.0             # 安全漏洞扫描
+safety>=3.2.0             # 依赖漏洞检查
+diff-cover>=9.0.0         # PR 覆盖率差异报告

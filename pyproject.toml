@@ -1,0 +1,176 @@
+# pyproject.toml — Project configuration for linters, type checker, and test tools
+#
+# Centralizes configuration for:
+#   - ruff (lint + format)
+#   - mypy (type checking)
+#   - pytest (test runner + coverage)
+#   - bandit (security scanning)
+#   - coverage (code coverage)
+
+[project]
+name = "logpilot"
+version = "2.0.0"
+description = "AI-powered CI/CD build failure log analyzer with semantic caching"
+requires-python = ">=3.10"
+readme = "README.md"
+license = { file = "LICENSE" }
+
+# ============================================================
+#  Ruff — Linter & Formatter
+# ============================================================
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+exclude = [
+    "venv",
+    ".venv",
+    "__pycache__",
+    ".git",
+    "node_modules",
+    ".claude",
+    ".streamlit",
+]
+
+[tool.ruff.lint]
+select = [
+    # pyflakes (basic errors)
+    "F",
+    # pycodestyle (style)
+    "E",
+    "W",
+    # isort (import sorting)
+    "I",
+    # flake8-bugbear (common bugs)
+    "B",
+    # flake8-comprehensions
+    "C4",
+    # flake8-simplify
+    "SIM",
+    # pyupgrade
+    "UP",
+    # flake8-return
+    "RET",
+    # flake8-unused-arguments
+    "ARG",
+    # eradicate (commented-out code)
+    "ERA",
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # do not perform function calls in argument defaults
+    "SIM108", # use ternary operator (not always clearer)
+    "ARG002", # unused method arguments (common in callbacks)
+]
+# Allow fix to import from __future__ annotations
+fixable = ["ALL"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["log_parser", "analyzer", "api", "analyzers", "plugins", "utils"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+# ============================================================
+#  Mypy — Static Type Checking
+# ============================================================
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+exclude = [
+    "venv/",
+    ".venv/",
+    "__pycache__/",
+    ".git/",
+    "node_modules/",
+    "tests/",         # Start strict: skip tests initially
+]
+# Incremental adoption — start with basic checks, tighten over time
+strict = false
+warn_return_any = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+disallow_untyped_defs = false   # TODO: flip to true as types are added
+disallow_incomplete_defs = false # TODO: flip to true as types are added
+check_untyped_defs = true
+show_error_codes = true
+pretty = true
+# Per-module strictness (tighten as modules are typed)
+# [[tool.mypy.overrides]]
+# module = "analyzers.*"
+# disallow_untyped_defs = true
+
+# ============================================================
+#  Pytest — Test Runner
+# ============================================================
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+    "--disable-warnings",
+    "-p no:cacheprovider",
+]
+timeout = 300
+# Markers for test categorization
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+    "concurrency: marks tests that test concurrency safety",
+]
+
+# ============================================================
+#  Coverage — Code Coverage
+# ============================================================
+[tool.coverage.run]
+source = ["."]
+omit = [
+    "*/tests/*",
+    "*/venv/*",
+    "*/.venv/*",
+    "*/__pycache__/*",
+    "*/node_modules/*",
+    "*/.*/*",
+    "setup.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "def __str__",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "pass",
+    '\\.\\.\\.',
+]
+fail_under = 70
+show_missing = true
+skip_covered = false
+skip_empty = true
+
+[tool.coverage.html]
+directory = "htmlcov"
+
+[tool.coverage.xml]
+output = "coverage.xml"
+
+# ============================================================
+#  Bandit — Security Scanner
+# ============================================================
+[tool.bandit]
+exclude_dirs = ["venv", ".venv", "__pycache__", ".git", "tests", "node_modules"]
+skips = ["B101", "B104"]  # B101=assert (used in tests), B104=hardcoded bind (not applicable)
+severity = "medium"
+confidence = "medium"
