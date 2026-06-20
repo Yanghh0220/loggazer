@@ -1,5 +1,8 @@
 # config.py - 集中管理配置项
 #
+# v2.0 — 性能优化更新 (2026-06-20)
+# ✅ 新增: 异步任务 TTL、大文件分块、缓存磁盘持久化等配置
+#
 # 为什么需要这个文件？
 # 1. 把散落在各处的配置集中管理，修改时不用到处找
 # 2. 支持从环境变量读取，方便部署时覆盖默认值
@@ -186,3 +189,37 @@ BACKEND_POLL_MAX_ATTEMPTS = int(_get_secret("BACKEND_POLL_MAX_ATTEMPTS", "10"))
 BACKEND_POLL_BASE_DELAY = float(_get_secret("BACKEND_POLL_BASE_DELAY", "0.1"))
 # 后端启动轮询最大延迟（秒）
 BACKEND_POLL_MAX_DELAY = float(_get_secret("BACKEND_POLL_MAX_DELAY", "1.6"))
+
+# --- ✅ 异步任务架构 (v2.0) ---
+# 任务状态 TTL（秒），超时自动清理
+TASK_TTL_SECONDS = int(_get_secret("TASK_TTL_SECONDS", "3600"))
+# 任务轮询间隔（秒）
+TASK_POLL_INTERVAL = float(_get_secret("TASK_POLL_INTERVAL", "0.5"))
+# 任务最大轮询次数
+TASK_MAX_POLLS = int(_get_secret("TASK_MAX_POLLS", "120"))
+# MAX_CONTENT_LENGTH（字节），默认 500MB
+MAX_CONTENT_LENGTH = int(_get_secret("MAX_CONTENT_LENGTH", "524288000"))
+
+# --- ✅ 大文件分块 (v2.0) ---
+# 文件读取块大小（字节），默认 10MB
+FILE_CHUNK_SIZE = int(_get_secret("FILE_CHUNK_SIZE", "10485760"))
+# 大文件阈值（字节），超过此值启用分块读取
+LARGE_FILE_THRESHOLD = int(_get_secret("LARGE_FILE_THRESHOLD", "52428800"))
+
+# --- ✅ 缓存磁盘持久化 (v2.0) ---
+# 磁盘缓存 TTL（秒），默认 30 分钟
+DISK_CACHE_TTL_SECONDS = int(_get_secret("DISK_CACHE_TTL_SECONDS", "1800"))
+# 磁盘缓存目录
+CACHE_DIR = _get_secret("CACHE_DIR", ".cache")
+
+# --- ✅ 并行分析器 (v2.0) ---
+# 分析器线程池大小
+ANALYZER_POOL_SIZE = int(_get_secret("ANALYZER_POOL_SIZE", "4"))
+# 分析器超时（秒）
+ANALYZER_TIMEOUT = int(_get_secret("ANALYZER_TIMEOUT", "30"))
+
+# --- ✅ 生产部署 (v2.0) ---
+# Gunicorn worker 数量
+GUNICORN_WORKERS = int(_get_secret("GUNICORN_WORKERS", "4"))
+# Gunicorn 超时（秒）
+GUNICORN_TIMEOUT = int(_get_secret("GUNICORN_TIMEOUT", "300"))

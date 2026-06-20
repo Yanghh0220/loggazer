@@ -699,19 +699,167 @@ for i, name in enumerate(sample_names):
             selected_sample = name
 
 # ============================================
-# 日志输入
+# ✅ 优化点: 输入模式切换 — 文本粘贴 / 文件上传
 # ============================================
-if selected_sample:
-    st.session_state["log_input"] = SAMPLE_LOGS[selected_sample]
+input_col1, input_col2 = st.columns([1, 1])
+with input_col1:
+    input_mode = st.radio(
+        "输入方式",
+        ["📝 粘贴文本", "📁 上传文件"],
+        horizontal=True,
+        key="input_mode",
+        label_visibility="collapsed",
+    )
+    # 默认值
+    if "input_mode" not in st.session_state:
+        st.session_state["input_mode"] = "📝 粘贴文本"
 
-log_input = st.text_area(
-    label="构建日志",
-    height=260,
-    placeholder="在此粘贴构建失败日志...",
-    value=st.session_state.get("log_input", ""),
-    key="log_input",
-    label_visibility="collapsed"
-)
+# ============================================
+# ✅ 优化点: 文件上传模式 — 异步轮询架构
+# ============================================
+# 设计: 上传文件 → 获得 task_id → 每 500ms 轮询 → 实时更新进度条 → 分步渲染结果
+
+if st.session_state.get("input_mode") == "📁 上传文件":
+    uploaded_file = st.file_uploader(
+        "上传日志文件（支持 .log, .txt, .json, 最大 500MB）",
+        type=["log", "txt", "json", "out", "err"],
+        key="log_file_uploader",
+        help="上传后自动开始异步分析，无需手动点击分析按钮",
+    )
+
+    if uploaded_file is not None:
+        file_size_mb = len(uploaded_file.getvalue()) / (1024 * 1024)
+
+        # 文件大小指示
+        st.markdown(f"""
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;
+                    padding:8px 14px;background:#f0fdf4;border:1px solid #bbf7d0;
+                    border-radius:8px;font-size:0.82rem;">
+            <span style="color:#16a34a;font-weight:600;">📁 {uploaded_file.name}</span>
+            <span style="color:#737373;">·</span>
+            <span style="color:#525252;">{file_size_mb:.1f} MB</span>
+            <span style="color:#737373;">·</span>
+            <span style="color:#525252;">⏱️ 预计 {max(3, file_size_mb * 2):.0f}s 完成</span>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # ✅ 优化点: 异步上传 + 轮询
+        if "upload_task_id" not in st.session_state:
+            st.session_state["upload_task_id"] = None
+        if "upload_progress" not in st.session_state:
+            st.session_state["upload_progress"] = 0.0
+        if "upload_status" not in st.session_state:
+            st.session_state["upload_status"] = "idle"
+        if "upload_result" not in st.session_state:
+            st.session_state["upload_result"] = None
+
+        if st.button("🚀 开始分析", type="primary", use_container_width=True,
+                     disabled=st.session_state["upload_status"] == "running",
+                     key="upload_analyze_btn"):
+            st.session_state["upload_status"] = "running"
+            st.session_state["upload_progress"] = 0.0
+            st.session_state["upload_result"] = None
+
+            # 异步上传
+            try:
+                log_content = uploaded_file.getvalue().decode("utf-8", errors="replace")
+                with httpx.Client(timeout=180.0) as client:
+                    resp = client.post(
+                        f"{BACKEND_URL}/api/upload",
+                        files={"file": (uploaded_file.name, log_content, "text/plain")},
+                    )
+                    if resp.status_code == 202:
+                        data = resp.json()
+                        st.session_state["upload_task_id"] = data["task_id"]
+                        st.session_state["upload_status"] = "polling"
+                    else:
+                        st.error(f"上传失败: {resp.text[:500]}")
+                        st.session_state["upload_status"] = "error"
+            except Exception as e:
+                st.error(f"上传失败: {str(e)[:500]}")
+                st.session_state["upload_status"] = "error"
+
+        # ✅ 优化点: 轮询逻辑（每 500ms）
+        if st.session_state["upload_status"] == "polling":
+            task_id = st.session_state["upload_task_id"]
+            progress_placeholder = st.empty()
+            status_placeholder = st.empty()
+
+            max_polls = 120  # 最多轮询 60 秒
+            for attempt in range(max_polls):
+                try:
+                    with httpx.Client(timeout=5.0) as client:
+                        resp = client.get(f"{BACKEND_URL}/api/task/{task_id}")
+                        if resp.is_success:
+                            task_data = resp.json()
+                            status = task_data["status"]
+                            progress = task_data.get("progress", 0.0)
+
+                            st.session_state["upload_progress"] = progress
+
+                            # ✅ 优化点: 实时进度条
+                            progress_placeholder.progress(
+                                progress,
+                                text=f"{status.upper()} — {progress * 100:.0f}%"
+                            )
+
+                            if status == "parsing":
+                                status_placeholder.info("📝 正在解析日志...")
+                            elif status == "analyzing":
+                                status_placeholder.info(f"🔬 正在并行分析... ({progress * 100:.0f}%)")
+
+                            if status == "completed":
+                                st.session_state["upload_status"] = "completed"
+                                st.session_state["upload_result"] = task_data.get("result")
+                                progress_placeholder.progress(1.0, text="✅ 分析完成 — 100%")
+                                status_placeholder.success(
+                                    f"✅ 分析完成！耗时 {task_data.get('duration_ms', 0):.0f}ms"
+                                )
+                                break
+                            elif status == "failed":
+                                st.session_state["upload_status"] = "error"
+                                progress_placeholder.error(f"❌ 分析失败")
+                                status_placeholder.error(task_data.get("error", "Unknown error")[:500])
+                                break
+                except Exception:
+                    pass  # 轮询失败时静默重试
+
+                time.sleep(0.5)  # ✅ 500ms 轮询间隔
+            else:
+                st.session_state["upload_status"] = "timeout"
+                progress_placeholder.warning("⏰ 轮询超时，分析可能仍在后台进行")
+
+        # ✅ 优化点: 分步渲染结果（分 Tab/Card 展示）
+        if st.session_state["upload_status"] == "completed" and st.session_state["upload_result"]:
+            result = st.session_state["upload_result"]
+            _render_analysis_result(result, {"cache_status": "miss"})
+
+            # 重置状态（允许重新上传）
+            if st.button("🔄 分析新文件", key="reset_upload"):
+                st.session_state["upload_task_id"] = None
+                st.session_state["upload_status"] = "idle"
+                st.session_state["upload_result"] = None
+                st.session_state["upload_progress"] = 0.0
+                st.rerun()
+
+    st.markdown("---")
+    st.caption("💡 或者切换到「📝 粘贴文本」模式直接粘贴日志内容")
+
+# ============================================
+# 日志输入（文本粘贴模式）
+# ============================================
+else:
+    if selected_sample:
+        st.session_state["log_input"] = SAMPLE_LOGS[selected_sample]
+
+    log_input = st.text_area(
+        label="构建日志",
+        height=260,
+        placeholder="在此粘贴构建失败日志...",
+        value=st.session_state.get("log_input", ""),
+        key="log_input",
+        label_visibility="collapsed"
+    )
 
 # ============================================
 #  P2-1③: 文件大小指示器 + 预估时间 + P2-4① 大小检查

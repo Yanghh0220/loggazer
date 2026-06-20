@@ -1,5 +1,10 @@
 # LogGazer 依赖包列表
 # 安装命令：pip install -r requirements.txt
+#
+# v2.0 — 性能优化更新 (2026-06-20)
+# ✅ 新增: pandas (向量化分析)
+# ✅ 新增: flask-compress (Gzip 响应压缩)
+# ✅ 新增: gunicorn (生产部署)
 
 # ---- 运行时依赖 ----
 streamlit>=1.37.0       # Web 界面框架，用 Python 写网页
@@ -13,7 +18,13 @@ instructor>=1.0.0       # LLM 结构化输出（强制 AI 按 Schema 生成 JSON
 fastapi>=0.110.0         # FastAPI 框架（异步 REST API）
 uvicorn[standard]>=0.27.0  # ASGI 服务器（FastAPI 运行时）
 httpx>=0.27.0            # 异步 HTTP 客户端（Streamlit BFF → FastAPI）
-python-multipart>=0.0.9  # 表单解析（FastAPI 依赖，预留）
+python-multipart>=0.0.9  # 表单解析（FastAPI 文件上传依赖）
+
+# ✅ 性能优化新增依赖 (v2.0)
+pandas>=2.0.0            # 向量化数据分析（stats_analyzer / anomaly_detector）
+flask-compress>=1.14     # Gzip 响应压缩（FastAPI 使用 GZipMiddleware 内置）
+gunicorn>=21.2.0         # 生产级 WSGI 服务器（部署命令见 api/main.py 顶部注释）
+cachetools>=5.3.0        # TTLCache 内存缓存（已在用，显式声明）
 
 # ---- MCP Protocol ----
 mcp>=1.0.0               # MCP (Model Context Protocol) Python SDK（FastMCP）

@@ -1,16 +1,13 @@
 # models.py - 结构化数据模型（Pydantic v2）
 #
+# v2.0 — 性能优化更新 (2026-06-20)
+# ✅ 新增: TaskStatus / AnalysisStatistics / AnomalyResult 等异步任务和并行分析模型
+#
 # 职责：
 # 1. 定义 AI 分析结果的强类型 Schema（运行时校验 + IDE 补全）
 # 2. 通过 Field(description=...) 注入 LLM System Prompt 作为 Schema 约束
 # 3. 通过 field_validator / model_validator 执行字段级安全校验
 # 4. 导出 JSON Schema 供 API 文档或前端表单生成
-#
-# 从 TypedDict 迁移到 Pydantic v2 的收益：
-# - 运行时校验：AI 输出不符合 Schema 时立即报错，不会悄悄传入下游
-# - JSON Schema 生成：model_json_schema() 自动注入 System Prompt
-# - 错误信息可读：ValidationError 包含字段路径、期望值、实际值
-# - Instructor 兼容：response_model=AnalysisResult 实现模式强制生成
 
 from __future__ import annotations
 
@@ -305,3 +302,103 @@ class ParsedLog(BaseModel):
 
     def get(self, key: str, default: Any = None) -> Any:
         return getattr(self, key, default)
+
+
+# ============================================================
+# ✅ v2.0 优化点: 异步任务模型 — TaskStatus
+# ============================================================
+# 用于 GET /api/task/<task_id> 的响应，告知前端分析进度
+
+
+class TaskStatus(BaseModel):
+    """异步分析任务的状态模型"""
+
+    task_id: str = Field(..., description="任务唯一标识符 (UUID v4)")
+    status: str = Field(
+        "pending",
+        description="任务状态: pending | parsing | analyzing | completed | failed",
+    )
+    progress: float = Field(
+        0.0,
+        ge=0.0,
+        le=1.0,
+        description="进度百分比 (0.0 - 1.0)",
+    )
+    result: dict | None = Field(
+        None,
+        description="分析结果（仅 status=completed 时有值）",
+    )
+    error: str | None = Field(
+        None,
+        description="错误信息（仅 status=failed 时有值）",
+    )
+    filename: str | None = Field(
+        None,
+        description="上传的文件名",
+    )
+    duration_ms: float = Field(
+        0.0,
+        description="总耗时（毫秒）",
+    )
+    created_at: float = Field(
+        0.0,
+        description="任务创建时间（Unix timestamp）",
+    )
+
+
+# ============================================================
+# ✅ v2.0 优化点: 并行分析结果模型
+# ============================================================
+
+
+class LogStatistics(BaseModel):
+    """统计分析结果"""
+    total_lines: int = 0
+    log_level_distribution: dict = Field(default_factory=dict)
+    error_density: float = 0.0
+    error_count: int = 0
+    warning_count: int = 0
+    fatal_count: int = 0
+    top_error_patterns: list[dict] = Field(default_factory=list)
+    avg_line_length: float = 0.0
+    max_line_length: int = 0
+    lines_with_stacktrace: int = 0
+    unique_error_messages: int = 0
+
+
+class AnomalyResult(BaseModel):
+    """异常检测结果"""
+    anomalies: list[dict] = Field(default_factory=list)
+    severity_distribution: dict = Field(default_factory=dict)
+    burst_detected: bool = False
+    anomaly_density: float = 0.0
+    high_severity_count: int = 0
+    total_anomalies: int = 0
+
+
+class PatternResult(BaseModel):
+    """模式分析结果"""
+    error_categories: dict = Field(default_factory=dict)
+    version_conflicts: list[dict] = Field(default_factory=list)
+    dependency_errors: list[str] = Field(default_factory=list)
+    file_paths_mentioned: list[str] = Field(default_factory=list)
+    repeated_errors: list[dict] = Field(default_factory=list)
+    total_categories: int = 0
+
+
+class TimelineResult(BaseModel):
+    """时间线分析结果"""
+    total_timestamps_found: int = 0
+    timestamp_coverage: float = 0.0
+    time_range: dict = Field(default_factory=dict)
+    timeline_anomalies: list[dict] = Field(default_factory=list)
+    duration_stats: dict = Field(default_factory=dict)
+    event_density: list[dict] = Field(default_factory=list)
+
+
+class ParallelAnalysisResult(BaseModel):
+    """并行分析器聚合结果"""
+    statistics: LogStatistics | None = None
+    anomalies: AnomalyResult | None = None
+    patterns: PatternResult | None = None
+    timeline: TimelineResult | None = None
