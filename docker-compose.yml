@@ -1,0 +1,120 @@
+# ═══════════════════════════════════════════════════════════════════════
+# LogPilot Full Stack — Docker Compose
+# ═══════════════════════════════════════════════════════════════════════
+#
+# Services: logpilot (FastAPI + Streamlit) + Qdrant + Redis
+#
+# Usage:
+#   docker compose up -d              # start all services
+#   docker compose logs -f logpilot   # follow logpilot logs
+#   docker compose down               # stop and remove
+#
+# Prerequisites:
+#   - .env file with DEEPSEEK_API_KEY (or ANTHROPIC_API_KEY)
+#   - config.toml for LogPilot settings (optional)
+# ═══════════════════════════════════════════════════════════════════════
+
+version: "3.9"
+
+services:
+  # ── LogPilot Application ────────────────────────────────────────────
+  logpilot:
+    build:
+      context: .
+      args:
+        INCLUDE_QDRANT: "true"
+    image: logpilot:latest
+    container_name: logpilot
+    restart: unless-stopped
+    ports:
+      - "8000:8000"   # FastAPI backend
+      - "8501:8501"   # Streamlit frontend
+    environment:
+      # AI Provider (choose one)
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - DEEPSEEK_BASE_URL=${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # Qdrant — connect to external service
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_MODE=remote
+      # Redis — connect to external service
+      - REDIS_URL=redis://redis:6379/0
+      - RATE_LIMITER_BACKEND=redis
+      # Cache & Data
+      - LOGPILOT_CACHE_DIR=/home/logpilot/.cache
+      - LOGPILOT_DATA_DIR=/home/logpilot/data
+      # Observability
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - logpilot_cache:/home/logpilot/.cache
+      - logpilot_data:/home/logpilot/data
+      - ./config.toml:/app/config.toml:ro
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "/app/docker/healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - logpilot_net
+
+  # ── Qdrant Vector Database ──────────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: logpilot-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"   # HTTP API
+      - "6334:6334"   # gRPC API
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      - logpilot_net
+
+  # ── Redis ───────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: logpilot-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - logpilot_net
+
+# ── Volumes ────────────────────────────────────────────────────────────
+volumes:
+  logpilot_cache:
+    driver: local
+  logpilot_data:
+    driver: local
+  qdrant_data:
+    driver: local
+  redis_data:
+    driver: local
+
+# ── Networks ───────────────────────────────────────────────────────────
+networks:
+  logpilot_net:
+    driver: bridge

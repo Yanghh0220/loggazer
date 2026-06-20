@@ -1,0 +1,54 @@
+# ═══════════════════════════════════════════════════════════════════════
+# LogPilot Minimal — Docker Compose (No External Services)
+# ═══════════════════════════════════════════════════════════════════════
+#
+# Single service: LogPilot with embedded Qdrant (in-memory) and
+# in-memory rate limiter. No Redis, no external Qdrant needed.
+#
+# Usage:
+#   docker compose -f docker-compose.minimal.yml up -d
+#   docker compose -f docker-compose.minimal.yml down
+#
+# Prerequisites:
+#   - .env file with DEEPSEEK_API_KEY (or ANTHROPIC_API_KEY)
+# ═══════════════════════════════════════════════════════════════════════
+
+version: "3.9"
+
+services:
+  logpilot:
+    build:
+      context: .
+      args:
+        INCLUDE_QDRANT: "true"
+    image: logpilot:latest
+    container_name: logpilot-minimal
+    restart: unless-stopped
+    ports:
+      - "8000:8000"   # FastAPI backend
+      - "8501:8501"   # Streamlit frontend
+    environment:
+      # AI Provider
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - DEEPSEEK_BASE_URL=${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # Embedded mode — no external services
+      - QDRANT_MODE=memory
+      - RATE_LIMITER_BACKEND=memory
+      # Cache
+      - LOGPILOT_CACHE_DIR=/home/logpilot/.cache
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - logpilot_cache:/home/logpilot/.cache
+      - ./config.toml:/app/config.toml:ro
+    healthcheck:
+      test: ["CMD", "/app/docker/healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  logpilot_cache:
+    driver: local

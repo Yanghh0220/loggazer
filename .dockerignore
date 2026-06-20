@@ -1,0 +1,76 @@
+# ── Version Control ──
+.git/
+.github/
+.gitignore
+.gitattributes
+
+# ── Python Artifacts ──
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+*.egg
+.eggs/
+dist/
+build/
+*.whl
+
+# ── Virtual Environments ──
+.venv/
+venv/
+env/
+.env
+.env.local
+.env.*
+
+# ── Testing & CI ──
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+coverage.xml
+htmlcov/
+tests/
+benchmark/
+
+# ── IDE & Editor ──
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── Streamlit ──
+.streamlit/secrets.toml
+.streamlit/config.toml
+
+# ── Docs & Assets ──
+docs/
+*.md
+!README.md
+screenshots/
+
+# ── Scripts (not needed in image) ──
+scripts/
+
+# ── Node / VS Code Extension ──
+node_modules/
+vscode-extension/
+package.json
+package-lock.json
+
+# ── Docker ──
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# ── OS Files ──
+Thumbs.db
+.DS_Store
+Desktop.ini
+
+# ── Logs & Cache (host) ──
+*.log
+logs/
+.cache/
