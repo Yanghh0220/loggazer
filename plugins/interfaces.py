@@ -12,9 +12,7 @@ Python 3.10+ style type annotations throughout.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
-import re
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -24,10 +22,8 @@ from threading import RLock
 from typing import (
     Any,
     AsyncIterator,
-    Callable,
     ClassVar,
     Literal,
-    Optional,
     Protocol,
     runtime_checkable,
 )
