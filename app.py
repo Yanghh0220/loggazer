@@ -32,6 +32,11 @@ from resource_guard import get_file_size_limit, get_concurrency_limiter
 # P0-3: 共享线程池（Streamlit 端 API 调用隔离）
 _API_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="loggazer-api")
 
+# P0 FIX-001: Register executor for graceful shutdown
+import shutdown as _shutdown
+_shutdown.register_executor("streamlit-api", _API_EXECUTOR)
+_shutdown.install_signal_handlers()
+
 # Backend API URL (configurable for local/cloud deployment)
 BACKEND_URL = os.getenv(
     "LOGGAZER_API_URL", "http://127.0.0.1:8000"

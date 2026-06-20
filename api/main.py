@@ -28,6 +28,7 @@ import threading
 import uuid
 import json as _json
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+from contextlib import asynccontextmanager
 from typing import Optional
 
 from cachetools import TTLCache
@@ -36,6 +37,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.exceptions import RequestValidationError
+
+# P0 FIX-001: Graceful shutdown module
+import shutdown as _shutdown
+
+# P0 FIX-002: Bounded task store (replaces unbounded dict)
+from task_store import BoundedTaskStore
 
 from api.schemas import (
     ProblemDetail,
@@ -80,38 +87,35 @@ _executor = ThreadPoolExecutor(max_workers=_MAX_WORKERS, thread_name_prefix="log
 # _process_executor = ProcessPoolExecutor(max_workers=2)
 
 # ============================================================
-# ✅ 优化点: 任务状态存储（内存字典实现）
+# P0 FIX-002: 有界任务状态存储（BoundedTaskStore 替代裸 dict）
 # ============================================================
 # 设计：上传后立即分配 task_id，后台异步处理，前端轮询查询进度
 # 状态流转: pending → parsing → analyzing → completed / failed
 #
+# 为什么替换？
+# - 旧 _task_store dict 无界 → 恶意客户端可导致 OOM
+# - _cleanup_expired_tasks 存在但从未被调用 → BoundedTaskStore 内置自动清理
+# - BoundedTaskStore 内置 LRU 驱逐 + 线程安全 + 后台清理线程
+#
 # 🔧 Redis 替换方案（生产环境）:
 #   将 _task_store 替换为 Redis hash:
-#     redis_client.hset(f"task:{task_id}", mapping={
-#         "status": "parsing", "progress": 0.25, ...
-#     })
+#     redis_client.hset(f"task:{task_id}", mapping={...})
 #   设置 TTL: redis_client.expire(f"task:{task_id}", 3600)
 #   轮询: redis_client.hgetall(f"task:{task_id}")
 #
-_task_store: dict = {}
-_task_store_lock = threading.Lock()
+_task_store = BoundedTaskStore(
+    max_capacity=int(os.getenv("TASK_STORE_MAX_CAPACITY", "1000")),
+    task_ttl_seconds=float(os.getenv("TASK_TTL_SECONDS", "3600")),
+    cleanup_interval=float(os.getenv("TASK_STORE_CLEANUP_INTERVAL", "60")),
+)
 
-# 任务 TTL: 1 小时（超时自动清理）
-_TASK_TTL_SECONDS = 3600
+# Backward compatibility: _task_store_lock reference preserved for
+# external code that may import it (e.g., tests)
+_task_store_lock = _task_store._lock
 
-
-def _cleanup_expired_tasks():
-    """清理过期任务（后台线程定期执行）"""
-    now = time.time()
-    with _task_store_lock:
-        expired = [
-            tid for tid, t in _task_store.items()
-            if now - t.get("created_at", now) > _TASK_TTL_SECONDS
-        ]
-        for tid in expired:
-            del _task_store[tid]
-        if expired:
-            logger.debug("清理了 %d 个过期任务", len(expired))
+# 注意: _cleanup_expired_tasks() 已被 BoundedTaskStore._cleanup_expired() 替代
+# 保留函数引用以兼容可能的外部调用
+_cleanup_expired_tasks = _task_store._cleanup_expired
 
 
 # ============================================================
@@ -135,6 +139,48 @@ def clear_api_cache() -> dict:
 # ============================================================
 #  FastAPI Application
 # ============================================================
+
+# ============================================================
+# P0 FIX-001: FastAPI Lifespan (replaces @app.on_event)
+# ============================================================
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan: startup → yield → shutdown."""
+    # === Startup ===
+    logger.info("LogGazer API v2.0.0 starting up (pid=%d)", os.getpid())
+
+    # Install signal handlers for graceful shutdown
+    _shutdown.install_signal_handlers()
+
+    # Register API executor for graceful shutdown
+    _shutdown.register_executor("api-worker", _executor)
+
+    # Register analyzer executor (imported lazily from analyzer module)
+    try:
+        from analyzer import _ANALYZER_EXECUTOR
+        _shutdown.register_executor("analyzer", _ANALYZER_EXECUTOR)
+    except Exception:
+        logger.debug("Analyzer executor not available for registration")
+
+    # Register shutdown hook: stop accepting new tasks
+    def _stop_accepting():
+        logger.info("Shutdown: stopping new task acceptance")
+        if hasattr(_task_store, 'shutdown'):
+            _task_store.shutdown()
+
+    _shutdown.register_hook("stop-task-store", _stop_accepting, priority=15)
+
+    # Run warmup
+    import asyncio as _asyncio
+    loop = _asyncio.get_event_loop()
+    await loop.run_in_executor(_executor, _warmup_backend)
+
+    logger.info("LogGazer API startup complete")
+    yield
+    # === Shutdown ===
+    logger.info("LogGazer API shutting down...")
+    _shutdown._run_shutdown_sequence("server-shutdown")
+
 
 app = FastAPI(
     title="LogGazer API",
@@ -160,6 +206,7 @@ Analyze CI/CD build failure logs with AI-powered root cause analysis.
         {"name": "Clusters", "description": "Error clustering and trend insights"},
         {"name": "Platforms", "description": "Supported platform information"},
     ],
+    lifespan=lifespan,
 )
 
 # ---- CORS Middleware ----
@@ -239,13 +286,6 @@ def _warmup_backend():
 
     _elapsed = time.time() - _start
     logger.info("P2-2② Backend 预热完成，耗时 %.2fs", _elapsed)
-
-
-@app.on_event("startup")
-async def startup_event():
-    import asyncio as _asyncio
-    loop = _asyncio.get_event_loop()
-    await loop.run_in_executor(_executor, _warmup_backend)
 
 
 # ============================================================
@@ -477,8 +517,8 @@ async def upload_file_endpoint(
         "created_at": time.time(),
     }
 
-    with _task_store_lock:
-        _task_store[task_id] = task_entry
+    # P0 FIX-002: BoundedTaskStore.set() — 线程安全，自动 LRU 驱逐
+    _task_store.set(task_id, task_entry)
 
     # 后台异步处理
     background_tasks.add_task(
@@ -532,8 +572,8 @@ async def analyze_text_endpoint(
         "created_at": time.time(),
     }
 
-    with _task_store_lock:
-        _task_store[task_id] = task_entry
+    # P0 FIX-002: BoundedTaskStore.set() — 线程安全，自动 LRU 驱逐
+    _task_store.set(task_id, task_entry)
 
     background_tasks.add_task(
         _process_upload_task,
@@ -574,8 +614,8 @@ Query the status of an async analysis task.
 )
 async def get_task_status(task_id: str):
     """✅ 优化点: 返回 {status, progress, result} 供前端轮询"""
-    with _task_store_lock:
-        task = _task_store.get(task_id)
+    # P0 FIX-002: BoundedTaskStore.get() — 线程安全，无需外部锁
+    task = _task_store.get(task_id)
 
     if task is None:
         raise HTTPException(
@@ -674,17 +714,15 @@ def _update_task(
     error: str | None = None,
     duration_ms: float = 0,
 ):
-    """更新任务状态"""
-    with _task_store_lock:
-        if task_id in _task_store:
-            _task_store[task_id]["status"] = status
-            _task_store[task_id]["progress"] = progress
-            if result is not None:
-                _task_store[task_id]["result"] = result
-            if error is not None:
-                _task_store[task_id]["error"] = error
-            if duration_ms:
-                _task_store[task_id]["duration_ms"] = round(duration_ms, 1)
+    """更新任务状态（使用 BoundedTaskStore.update 线程安全操作）"""
+    _task_store.update(
+        task_id=task_id,
+        status=status,
+        progress=progress,
+        result=result,
+        error=error,
+        duration_ms=duration_ms,
+    )
 
 
 # ============================================================

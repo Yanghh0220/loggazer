@@ -39,6 +39,9 @@ from config import (
 )
 from utils.performance import timer
 
+# P0 FIX-003: Prompt injection defense
+from prompt_sanitizer import sanitize_log_content
+
 logger = logging.getLogger(__name__)
 
 
@@ -50,6 +53,13 @@ _ANALYZER_EXECUTOR = ThreadPoolExecutor(
     max_workers=4,
     thread_name_prefix="loggazer-analyzer",
 )
+
+# P0 FIX-001: Register for graceful shutdown
+try:
+    import shutdown as _shutdown
+    _shutdown.register_executor("analyzer", _ANALYZER_EXECUTOR)
+except Exception:
+    pass  # shutdown module may not be available in all contexts
 
 
 # ============================================================
@@ -373,7 +383,16 @@ def analyze_log(log_text: str) -> AnalysisResult:
             _content_hash_cache[content_key] = prev_result
         return prev_result
 
-    # ---- 2. 预处理日志 ----
+    # ---- 2. P0 FIX-003: 日志内容净化（Prompt Injection 防御） ----
+    sanitize_result = sanitize_log_content(log_text)
+    if sanitize_result.was_modified:
+        logger.warning(
+            "Log content sanitized: %d injection(s) detected, %d line(s) truncated",
+            len(sanitize_result.injection_attempts), sanitize_result.truncations,
+        )
+    log_text = sanitize_result.cleaned_text
+
+    # ---- 3. 预处理日志 ----
     parsed = None
     stats = None
     with _cache_lock:
@@ -562,6 +581,16 @@ def analyze_log_advanced(log_text: str) -> AnalysisResult:
             _parsed_log_cache[content_key] = {"parsed": parsed, "stats": stats}
 
     rag_context = ""
+
+    # P0 FIX-003: 日志内容净化（Prompt Injection 防御）
+    sanitize_result = sanitize_log_content(log_text)
+    if sanitize_result.was_modified:
+        logger.warning(
+            "[Advanced] Log content sanitized: %d injection(s) detected",
+            len(sanitize_result.injection_attempts),
+        )
+    log_text = sanitize_result.cleaned_text
+
     cache = _get_or_create_cache()
     fingerprint = None
 
