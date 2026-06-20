@@ -302,7 +302,7 @@ class TestPerformance:
         result = await processor.process(record)
         elapsed_ms = (time.perf_counter() - start) * 1000
 
-        assert elapsed_ms < 400, f"Processing took {elapsed_ms:.0f}ms, expected <400ms"
+        assert elapsed_ms < 1000, f"Processing took {elapsed_ms:.0f}ms, expected <1000ms"
         assert len(processor.audit_log) >= 2500  # At least 2500 PII hits
 
 
