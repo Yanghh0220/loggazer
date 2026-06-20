@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -579,9 +580,9 @@ class PipelineExecutor:
 
     def __init__(
         self,
-        input_plugin: Any,
-        processors: list[Any],
-        output_plugin: Any,
+        input_plugin: InputPlugin,
+        processors: list[ProcessorPlugin],
+        output_plugin: OutputPlugin,
         error_policy: ErrorPolicy | str = ErrorPolicy.SKIP,
         max_retries: int = 3,
         stage_timeout: float = 30.0,
@@ -638,6 +639,8 @@ class PipelineExecutor:
                     processed = await self._process_record(record, result)
                     if processed is not None:
                         result.records_succeeded += 1
+                    else:
+                        result.records_failed += 1
                 except PipelineExecutionError:
                     raise
                 except Exception as exc:
@@ -712,11 +715,17 @@ class PipelineExecutor:
 # ── Module-level singleton registry ───────────────────────────────────────────
 
 _default_registry: PluginRegistry | None = None
+_registry_lock = threading.Lock()
 
 
 def get_registry() -> PluginRegistry:
-    """Get or create the module-level singleton PluginRegistry."""
+    """Get or create the module-level singleton PluginRegistry.
+
+    Thread-safe via double-checked locking.
+    """
     global _default_registry
     if _default_registry is None:
-        _default_registry = PluginRegistry()
+        with _registry_lock:
+            if _default_registry is None:
+                _default_registry = PluginRegistry()
     return _default_registry
