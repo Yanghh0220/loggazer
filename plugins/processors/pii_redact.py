@@ -126,10 +126,21 @@ def _build_default_rules() -> list[tuple[str, re.Pattern[str], str]]:
             r'[\w.\-+%]+@[\w.\-]+\.[a-zA-Z]{2,}',
             "[EMAIL]",
         ),
-        # ── IPv6 (full) ──
+        # ── IPv6 (full 8-hextet form) ──
         (
             "ipv6_full",
             r'\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b',
+            "[IP]",
+        ),
+        # ── IPv6 (compressed with :: shorthand) ──
+        # Matches forms like ::1, fe80::1, 2001:db8::1, ::
+        # Uses lookbehind instead of \b since ::1 has no word boundary
+        # before the leading colon.  Allows a trailing port (e.g. ::1:8080).
+        (
+            "ipv6_compressed",
+            r'(?:^|(?<![a-zA-Z0-9:.]))(?:(?:[0-9a-fA-F]{1,4}:){1,7}:'
+            r'|:(?::[0-9a-fA-F]{1,4}){1,7}'
+            r'|(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4})',
             "[IP]",
         ),
         # ── IPv4 ──
@@ -207,34 +218,20 @@ class PiiRedactProcessor(ProcessorPluginABC):
     # Compiled default rules — shared across all instances
     _DEFAULT_RULES: ClassVar[list[tuple[str, re.Pattern[str], str]]] = _build_default_rules()
 
-    # Fast string markers for PII pre-filtering (Level 1).
-    # These are checked via Python `in` (C-level substring search) before
-    # engaging the full regex pipeline.  Markers are ordered by probability
-    # of occurrence (most common first) to short-circuit early.
-    _STRING_MARKERS: ClassVar[list[str]] = [
-        "@",        # email
-        "eyJ",      # JWT (base64url-encoded JSON header)
-        "AKIA",     # AWS access key prefix
-        "AWS_SECRET", "aws_secret_access_key",  # AWS secret key
-        "github_pat_",  # GitHub Personal Access Token (new format)
-        "ghp_", "gho_", "ghu_", "ghs_", "ghr_",  # GitHub tokens (classic)
-    ]
-
-    # Fast format-based pre-filter patterns (Level 2) for PII types that
-    # lack a distinctive fixed string marker.  These are simple,
-    # non-validating approximations that are much faster than the full
-    # per-rule regexes but still catch potential matches.
-    _IP_PRE: ClassVar[re.Pattern[str]] = re.compile(
-        r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}", re.ASCII,
-    )
-    _LONG_DIGITS_PRE: ClassVar[re.Pattern[str]] = re.compile(
-        r"\d{10,}", re.ASCII,
-    )
-    _CC_PRE: ClassVar[re.Pattern[str]] = re.compile(
-        r"\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}", re.ASCII,
-    )
-    _IPV6_PRE: ClassVar[re.Pattern[str]] = re.compile(
-        r":[0-9a-fA-F]{3,4}:", re.ASCII,
+    # Combined pre-filter regex — one fast scan per line to decide
+    # whether the line might contain PII.  Uses simple, non-validating
+    # patterns that are much faster than the full per-rule regexes.
+    _PRE_FILTER: ClassVar[re.Pattern[str]] = re.compile(
+        r'@'                          # email
+        r'|\beyJ'                     # JWT token
+        r'|\bAKIA'                    # AWS access key
+        r'|AWS_SECRET|aws_secret'     # AWS secret key context
+        r'|github_pat_'               # GitHub PAT
+        r'|\bgh[pousr]_'              # GitHub classic tokens
+        r'|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}'  # IP-like (IPv4)
+        r'|::|:[0-9a-fA-F]{3,4}:'      # IPv6 (compressed :: or hex groups)
+        r'|\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}' # dashed/spaced CC
+        r'|\d{10,}'                    # phone/ID card (10+ consecutive digits)
     )
 
     # ── Instance init ──────────────────────────────────────────────────────
@@ -267,30 +264,17 @@ class PiiRedactProcessor(ProcessorPluginABC):
 
     @property
     def audit_log(self) -> deque[RedactionRecord]:
-        """Get the audit log (read-only access to deque)."""
         return self._audit_log
 
     @property
     def max_audit_entries(self) -> int:
-        """Get/set the maximum audit log entries."""
         return self._max_audit_entries
 
     @max_audit_entries.setter
     def max_audit_entries(self, value: int) -> None:
-        """Update max audit entries and recreate deque to enforce the limit."""
         self._max_audit_entries = value
         existing = list(self._audit_log)
         self._audit_log = deque(existing, maxlen=value)
-
-    @property
-    def _use_prefilter(self) -> bool:
-        """Whether the line-level pre-filter is safe to use.
-
-        The pre-filter is only active when there are no custom rules,
-        because custom rule patterns are not known at compile time and
-        may not be caught by the built-in string markers.
-        """
-        return len(self._rules) == len(self._DEFAULT_RULES)
 
     # ── Core processing ────────────────────────────────────────────────────
 
@@ -303,53 +287,15 @@ class PiiRedactProcessor(ProcessorPluginABC):
         snippet = matched_text[:8]
         return hashlib.sha256(snippet.encode("utf-8")).hexdigest()
 
-    @classmethod
-    def _line_has_pii(cls, line: str) -> bool:
-        """Fast pre-filter: check whether a line might contain PII.
-
-        Uses a multi-level approach:
-          Level 1 — Python ``in`` checks for distinctive fixed markers
-                   (email ``@``, JWT ``eyJ``, AWS/GitHub tokens, ...)
-          Level 2 — Separate simple regexes for IP-like, phone/CC/ID card
-                   digit patterns, dashed CC, and IPv6 hex groups.
-
-        Returns ``True`` if the line should enter the full redaction
-        pipeline, ``False`` if it can safely pass through unchanged.
-        """
-        # Level 1: string markers (very fast C-level substring search)
-        for marker in cls._STRING_MARKERS:
-            if marker in line:
-                return True
-        # Level 2a: IP-like pattern
-        if cls._IP_PRE.search(line):
-            return True
-        # Level 2b: 10+ consecutive digits (contiguous phone/CC/ID card)
-        if cls._LONG_DIGITS_PRE.search(line):
-            return True
-        # Level 2c: dashed/spaced credit-card pattern
-        if cls._CC_PRE.search(line):
-            return True
-        # Level 2d: IPv6 colon-hex pattern
-        if cls._IPV6_PRE.search(line):
-            return True
-        return False
-
-    def _make_replacer(self, rule_name: str, field_name: str, replacement: str):
-        """Create a replacer callback for ``re.sub`` that records redactions."""
-        def _replacer(match: re.Match[str]) -> str:
-            matched_text = match.group(0)
-            self._record_redaction(rule_name, field_name, matched_text, match.start())
-            return replacement
-        return _replacer
-
     def _redact_text(self, text: str, field_name: str, rules: list[tuple[str, re.Pattern[str], str]]) -> str:
-        """Apply all rules to a single text field.
+        """Apply all rules to a text field.
 
-        When only default rules are active (no custom rules), splits the
-        input by lines and runs a fast pre-filter on each line, engaging
-        the full per-rule regex pipeline only on lines that show potential
-        PII.  When custom rules are present, processes every line to ensure
-        no custom PII is missed.
+        Uses a single pre-filter pass (fast combined regex) to locate
+        potential PII regions, then runs the full per-rule regex pipeline
+        only on those regions.  Clean text passes through with zero
+        modification overhead.
+
+        When custom rules are active, falls back to full-text scanning.
 
         Args:
             text: The text to scan and redact.
@@ -359,25 +305,47 @@ class PiiRedactProcessor(ProcessorPluginABC):
         Returns:
             Redacted text with PII replaced.
         """
+        has_custom = len(rules) > len(self._DEFAULT_RULES)
+
+        if has_custom:
+            # Custom rules active — scan full text with all rules
+            result = text
+            for rule_name, pattern, replacement in rules:
+                matches = list(pattern.finditer(result))
+                if not matches:
+                    continue
+                for match in reversed(matches):
+                    matched_text = match.group(0)
+                    self._record_redaction(rule_name, field_name, matched_text, match.start())
+                    result = result[:match.start()] + replacement + result[match.end():]
+            return result
+
+        # Default rules only — use pre-filter to find PII regions, then
+        # redact line-by-line only on lines that contain potential PII.
         lines = text.splitlines(keepends=True)
         result_lines: list[str] = []
 
-        use_prefilter = self._use_prefilter
-
         for line in lines:
-            if not use_prefilter or self._line_has_pii(line):
+            if self._PRE_FILTER.search(line):
+                # Line contains potential PII — apply all rules
+                result = line
                 for rule_name, pattern, replacement in rules:
-                    line = pattern.sub(
-                        self._make_replacer(rule_name, field_name, replacement),
-                        line,
-                    )
-            result_lines.append(line)
+                    matches = list(pattern.finditer(result))
+                    if not matches:
+                        continue
+                    for match in reversed(matches):
+                        matched_text = match.group(0)
+                        self._record_redaction(rule_name, field_name, matched_text, match.start())
+                        result = result[:match.start()] + replacement + result[match.end():]
+                result_lines.append(result)
+            else:
+                result_lines.append(line)
 
         return "".join(result_lines)
 
     def _record_redaction(self, rule_name: str, field_name: str, matched_text: str, position: int) -> None:
         """Record a redaction event in the audit log."""
-        self._audit_log.append(RedactionRecord(
+        self.audit_log.append(RedactionRecord(
             rule_name=rule_name,
             field=field_name,
             matched_hash=self._hash_match(matched_text),
