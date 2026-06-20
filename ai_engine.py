@@ -35,6 +35,7 @@ from config import (
     CLAUDE_MODEL,
 )
 from cost_calculator import CostCalculator
+from cost_guard import BudgetExceededError, get_cost_guard, CostGuard
 from utils.performance import timer
 
 
@@ -61,6 +62,40 @@ def set_observability(obs):
     """注入 ObservabilityManager 实例（由 app.py 调用）"""
     global _observability_instance
     _observability_instance = obs
+
+
+# ============================================================
+#  CostGuard 集成（延迟加载）
+# ============================================================
+
+_cost_guard_instance = None
+
+
+def _get_cost_guard() -> Optional[CostGuard]:
+    """获取全局 CostGuard 实例（延迟加载）"""
+    global _cost_guard_instance
+    if _cost_guard_instance is None:
+        try:
+            # 尝试获取已存在的实例，或创建新的
+            obs = _get_observability()
+            # 使用与 observability 相同的 redis 连接
+            redis_client = obs._redis if obs else None
+            _cost_guard_instance = get_cost_guard(
+                redis_client=redis_client,
+                per_request_max_tokens=32_000,
+                daily_max_usd=10.0,
+                cost_calculator=CostCalculator(redis_client=redis_client),
+            )
+        except Exception as e:
+            logger.debug("CostGuard 初始化延迟: %s", e)
+            # 返回 None，调用方做降级处理
+    return _cost_guard_instance
+
+
+def set_cost_guard(guard: CostGuard) -> None:
+    """注入 CostGuard 实例（由 app.py 调用）"""
+    global _cost_guard_instance
+    _cost_guard_instance = guard
 
 
 def _classify_error(exception: Exception) -> str:
@@ -220,6 +255,22 @@ def _call_openai_compatible(
     obs = _get_observability()
     effective_temp = temperature if temperature is not None else AI_TEMPERATURE
 
+    # ---- IMP-001: 预算检查 (pre-call) ----
+    guard = _get_cost_guard()
+    input_estimated = CostCalculator.estimate_tokens(system_prompt + user_prompt)
+    if guard:
+        try:
+            guard.check_before_call(
+                model=DEEPSEEK_MODEL,
+                provider="deepseek",
+                input_tokens=input_estimated,
+                output_tokens_estimated=4096,
+            )
+        except BudgetExceededError as bee:
+            logger.warning("预算检查未通过: %s", bee.message)
+            guard.record_budget_exceeded(bee.limit_type)
+            raise
+
     with obs.trace_ai_call(
         provider="deepseek",
         model=DEEPSEEK_MODEL,
@@ -256,11 +307,12 @@ def _call_openai_compatible(
         result: dict = response.json()
         content: str = result["choices"][0]["message"]["content"]
 
-        # 记录 Token 消耗
+        # 记录 Token 消耗 + IMP-001: 成本记录
+        usage = result.get("usage", {})
+        input_tokens = usage.get("prompt_tokens", input_estimated)
+        output_tokens = usage.get("completion_tokens", CostCalculator.estimate_tokens(content))
+
         if obs:
-            usage = result.get("usage", {})
-            input_tokens = usage.get("prompt_tokens", CostCalculator.estimate_tokens(system_prompt + user_prompt))
-            output_tokens = usage.get("completion_tokens", CostCalculator.estimate_tokens(content))
             obs.record_tokens(
                 model=DEEPSEEK_MODEL,
                 provider="deepseek",
@@ -268,6 +320,18 @@ def _call_openai_compatible(
                 output_tokens=output_tokens,
                 status="success",
             )
+
+        if guard:
+            try:
+                guard.record_after_call(
+                    model=DEEPSEEK_MODEL,
+                    provider="deepseek",
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    status="success",
+                )
+            except Exception:
+                pass  # 成本记录失败不影响主流程
 
         return content
 
@@ -285,6 +349,22 @@ def _call_claude(
     logger.info(f"调用 Claude 接口，模型：{CLAUDE_MODEL}")
 
     obs = _get_observability()
+
+    # ---- IMP-001: 预算检查 (pre-call) ----
+    guard = _get_cost_guard()
+    input_estimated = CostCalculator.estimate_tokens(system_prompt + user_prompt)
+    if guard:
+        try:
+            guard.check_before_call(
+                model=CLAUDE_MODEL,
+                provider="claude",
+                input_tokens=input_estimated,
+                output_tokens_estimated=4096,
+            )
+        except BudgetExceededError as bee:
+            logger.warning("预算检查未通过: %s", bee.message)
+            guard.record_budget_exceeded(bee.limit_type)
+            raise
 
     with obs.trace_ai_call(
         provider="claude",
@@ -322,11 +402,12 @@ def _call_claude(
         result: dict = response.json()
         content: str = result["content"][0]["text"]
 
-        # 记录 Token 消耗
+        # 记录 Token 消耗 + IMP-001: 成本记录
+        usage = result.get("usage", {})
+        input_tokens = usage.get("input_tokens", input_estimated)
+        output_tokens = usage.get("output_tokens", CostCalculator.estimate_tokens(content))
+
         if obs:
-            usage = result.get("usage", {})
-            input_tokens = usage.get("input_tokens", CostCalculator.estimate_tokens(system_prompt + user_prompt))
-            output_tokens = usage.get("output_tokens", CostCalculator.estimate_tokens(content))
             obs.record_tokens(
                 model=CLAUDE_MODEL,
                 provider="claude",
@@ -334,6 +415,18 @@ def _call_claude(
                 output_tokens=output_tokens,
                 status="success",
             )
+
+        if guard:
+            try:
+                guard.record_after_call(
+                    model=CLAUDE_MODEL,
+                    provider="claude",
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    status="success",
+                )
+            except Exception:
+                pass  # 成本记录失败不影响主流程
 
         return content
 
@@ -406,6 +499,22 @@ def call_ai_legacy(system_prompt: str, user_prompt: str) -> str:
         if obs:
             obs.record_error("quota")
         return f"⚠️ **账户余额不足**\n\n请前往 {platform_url} 充值。"
+
+    except BudgetExceededError as e:
+        logger.warning("预算超额: %s (%s)", e.limit_type, e.message)
+        if obs:
+            obs.record_error("budget_exceeded")
+        guard = _get_cost_guard()
+        if guard:
+            guard.record_budget_exceeded(e.limit_type)
+        # 返回用户友好的结构化错误
+        bee_response = e.to_user_response()
+        return (
+            f"⚠️ **{bee_response['message']}**\n\n"
+            f"今日已使用: ${bee_response['used']:.2f} / ${bee_response['limit']:.2f}\n"
+            f"配额重置时间: {bee_response['reset_at']}\n\n"
+            f"💡 {bee_response['suggestion']}"
+        )
 
     except APIError as e:
         logger.error(f"API 错误（{e.status_code}）：{e.message}")
@@ -607,6 +716,25 @@ def call_ai_structured(
 
     # 使用 Instructor 进行结构化生成
     try:
+        # ---- IMP-001: 预算检查 (pre-call) ----
+        guard = _get_cost_guard()
+        input_estimated = CostCalculator.estimate_tokens(system_prompt + user_prompt)
+        if guard:
+            try:
+                guard.check_before_call(
+                    model=DEEPSEEK_MODEL,
+                    provider="deepseek",
+                    input_tokens=input_estimated,
+                    output_tokens_estimated=4096,
+                )
+            except BudgetExceededError as bee:
+                logger.warning("预算检查未通过: %s", bee.message)
+                guard.record_budget_exceeded(bee.limit_type)
+                return _create_fallback_model(
+                    AnalysisResult,
+                    bee.to_user_response()["message"],
+                )
+
         with timer("ai_engine:结构化生成(Instructor)", record=True):
             result = client.chat.completions.create(
                 model=DEEPSEEK_MODEL,
@@ -619,7 +747,33 @@ def call_ai_structured(
                 temperature=DEEPSEEK_TEMPERATURE,
             )
         logger.info("结构化生成成功")
+
+        # IMP-001: 记录成本（Instructor 模式下无法获取准确的 token，使用估算）
+        if guard:
+            try:
+                guard.record_after_call(
+                    model=DEEPSEEK_MODEL,
+                    provider="deepseek",
+                    input_tokens=input_estimated,
+                    output_tokens=CostCalculator.estimate_tokens(
+                        result.model_dump_json() if hasattr(result, 'model_dump_json') else str(result)
+                    ),
+                    status="success",
+                )
+            except Exception:
+                pass
+
         return result
+
+    except BudgetExceededError as bee:
+        logger.warning(
+            "Instructor 调用预算超额（%s: %s），返回降级结果",
+            bee.limit_type, bee.message,
+        )
+        return _create_fallback_model(
+            AnalysisResult,
+            bee.to_user_response()["message"],
+        )
 
     except Exception as e:
         error_name = type(e).__name__

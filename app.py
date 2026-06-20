@@ -98,6 +98,18 @@ def _get_observability():
             # 注入到 ai_engine
             ai_engine.set_observability(_observability)
 
+            # IMP-001: 初始化 CostGuard 并注入到 ai_engine
+            try:
+                from cost_guard import get_cost_guard
+                _cost_guard = get_cost_guard(
+                    redis_client=redis_client,
+                    per_request_max_tokens=32_000,
+                    daily_max_usd=10.0,
+                )
+                ai_engine.set_cost_guard(_cost_guard)
+            except Exception as _cg_err:
+                logger.warning("CostGuard 初始化失败: %s", _cg_err)
+
             # 启动 Metrics Server（独立线程，不阻塞 Streamlit）
             metrics_server.start(port=9090)
 
@@ -305,6 +317,48 @@ with st.sidebar:
             '🔴 Backend 未连接</div>',
             unsafe_allow_html=True,
         )
+
+    # IMP-002: 预检状态 — 非阻塞异步显示
+    st.markdown("---")
+    _pf_result = st.session_state.get("preflight_result")
+    if _pf_result is None:
+        # 预检仍在进行中
+        st.markdown(
+            '<div style="font-size: 0.75rem; color: #f59e0b;">'
+            '⏳ 系统检查中...</div>',
+            unsafe_allow_html=True,
+        )
+    elif _pf_result.passed:
+        # 所有关键检查通过
+        st.markdown(
+            '<div style="font-size: 0.75rem; color: #22c55e;">'
+            '✅ 系统就绪</div>',
+            unsafe_allow_html=True,
+        )
+        # 详细检查结果（可折叠）
+        with st.expander("📋 详情", expanded=False):
+            for check in _pf_result.checks:
+                icon = "✅" if check.status == "pass" else "⚠️" if check.status == "warn" else "❌"
+                st.caption(f"{icon} **{check.name}** ({check.duration_ms:.0f}ms): {check.message}")
+    else:
+        # 有阻塞性检查失败
+        st.markdown(
+            '<div style="font-size: 0.75rem; color: #ef4444;">'
+            '❌ 系统未就绪</div>',
+            unsafe_allow_html=True,
+        )
+        with st.expander("🔍 查看问题", expanded=True):
+            for check in _pf_result.blocking:
+                st.error(f"❌ **{check.name}**: {check.message}")
+            for check in _pf_result.warnings:
+                st.warning(f"⚠️ **{check.name}**: {check.message}")
+            # 显示通过的非关键检查（折叠内）
+            passed = [c for c in _pf_result.checks
+                      if c not in _pf_result.blocking and c not in _pf_result.warnings]
+            if passed:
+                with st.expander(f"✅ {len(passed)} 项检查通过", expanded=False):
+                    for check in passed:
+                        st.caption(f"✅ **{check.name}**: {check.message}")
 
     st.markdown("---")
 
@@ -610,6 +664,12 @@ tests/test_auth.py:15: AssertionError
 # 不依赖 session_state，因此 F5 刷新 / Streamlit rerun 都不会
 # 导致状态丢失或错误。
 
+# IMP-002: 预检状态追踪
+if "preflight_ran" not in st.session_state:
+    st.session_state["preflight_ran"] = False
+if "preflight_result" not in st.session_state:
+    st.session_state["preflight_result"] = None
+
 # 初始化 session_state 中的后端启动状态
 if "_backend_starting" not in st.session_state:
     st.session_state["_backend_starting"] = False
@@ -652,6 +712,26 @@ if not backend_healthy and not st.session_state["_backend_starting"]:
 if st.session_state["_backend_starting"] and manager.is_backend_running():
     st.session_state["_backend_starting"] = False
     backend_healthy = True
+
+# IMP-002: 异步预检 — 首次加载时在后台线程中运行，不阻塞 UI
+if not st.session_state["preflight_ran"]:
+    st.session_state["preflight_ran"] = True
+
+    def _run_preflight_bg():
+        """后台线程：执行所有预检并在完成后更新 session_state"""
+        try:
+            from preflight import PreflightChecker
+            checker = PreflightChecker(
+                ai_test_timeout=5.0,
+                min_disk_mb=500,
+                min_memory_mb=1024,
+            )
+            result = checker.run_all()
+            st.session_state["preflight_result"] = result
+        except Exception as _pf_err:
+            logger.warning("Preflight 执行失败: %s", _pf_err)
+
+    threading.Thread(target=_run_preflight_bg, daemon=True, name="loggazer-preflight").start()
 
 # ============================================
 # 标题
