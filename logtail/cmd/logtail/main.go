@@ -82,19 +82,35 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Consume merged lines and print to stdout.
+	// Format: <file_path>\t<byte_offset>\t<line_text>
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		for line := range mgr.Lines() {
+			fmt.Printf("%s\t%d\t%s", line.Path, line.Offset, line.Text)
+		}
+	}()
+
 	// Print stats periodically.
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
-		for range ticker.C {
-			s := mgr.Stats()
-			fmt.Fprintf(os.Stderr, "# stats: files=%d rotations=%d bytes=%d errors=%d\n",
-				s.Files, s.Rotations, s.BytesRead, s.Errors)
+		for {
+			select {
+			case <-ticker.C:
+				s := mgr.Stats()
+				fmt.Fprintf(os.Stderr, "# stats: files=%d rotations=%d bytes=%d errors=%d\n",
+					s.Files, s.Rotations, s.BytesRead, s.Errors)
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 
 	// Run (blocks until signal or error).
-	if err := mgr.Run(context.Background()); err != nil {
+	if err := mgr.Run(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "logtail: %v\n", err)
 		os.Exit(1)
 	}

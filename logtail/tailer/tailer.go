@@ -396,18 +396,26 @@ func (t *Tailer) drain() bool {
 }
 
 // emit sends a line to the output channel and advances the offset.
+//
+// Offset is advanced only after a successful channel send. This ensures that
+// on shutdown (ctx.Done), the checkpoint reflects the last successfully
+// emitted position — guaranteeing at-least-once semantics.
 func (t *Tailer) emit(text string) {
-	n := int64(len(text))
-
+	// Snapshot offset under lock for the Line header.
 	t.mu.Lock()
 	off := t.offset
-	t.offset += n
 	t.mu.Unlock()
 
 	select {
 	case t.lines <- Line{Path: t.cfg.Path, Offset: off, Text: text}:
+		n := int64(len(text))
+		t.mu.Lock()
+		t.offset += n
+		t.mu.Unlock()
 		t.bytesRead.Add(n)
 	case <-t.ctx.Done():
+		// Offset intentionally not advanced — on restart we will
+		// re-read and re-emit the line (at-least-once).
 	}
 }
 
@@ -575,7 +583,8 @@ func (t *Tailer) recoverFile() {
 }
 
 // drainRemainingLocked reads all remaining data from the current fd.
-// Must hold t.mu.
+// Must hold t.mu on entry; temporarily releases it during channel sends
+// to avoid blocking with the lock held.
 func (t *Tailer) drainRemainingLocked() {
 	if t.reader == nil {
 		return
@@ -586,12 +595,18 @@ func (t *Tailer) drainRemainingLocked() {
 			n := int64(len(line))
 			off := t.offset
 			t.offset += n
-			// Best-effort send; drop if channel is full (we're shutting down the fd).
+
+			// Release lock during send so we don't block with mu held.
+			t.mu.Unlock()
 			select {
 			case t.lines <- Line{Path: t.cfg.Path, Offset: off, Text: line}:
 				t.bytesRead.Add(n)
-			default:
+			case <-t.ctx.Done():
+				// Shutting down — stop draining.
+				t.mu.Lock()
+				return
 			}
+			t.mu.Lock()
 		}
 		if err != nil {
 			break
