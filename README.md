@@ -126,6 +126,30 @@
 
 > 💡 不在列表里的日志也能分析，只是平台识别的准确度可能稍低。
 
+### 🔄 实时日志追踪 (NEW — Go)
+
+| 功能 | 说明 |
+|------|------|
+| 📡 实时追踪 | `logtail` Go 守护进程，持续追踪日志文件（类似 `tail -f`） |
+| 🌀 日志轮转处理 | 支持 rename+create、copytruncate、remove+recreate、symlink 变化 |
+| 💾 断点续传 | 基于 inode/device 的检查点，重启后从上次位置继续 |
+| 🔒 原子写入 | Temp → fsync → rename 确保检查点不损坏 |
+| 📂 多文件支持 | 并发追踪多个文件，隔离状态 |
+| 🪶 轻量依赖 | 仅依赖 `fsnotify`，标准库为主 |
+
+```bash
+# 从头部开始追踪
+./logtail /var/log/app.log
+
+# 从尾部开始（tail -f 模式），多文件
+./logtail --start-at-end /var/log/app.log /var/log/nginx/access.log
+
+# 自定义检查点目录和轮询间隔
+./logtail --checkpoint-dir /var/lib/logpilot/ckpts --poll-interval 2s /var/log/*.log
+```
+
+详见 [`logtail/README.md`](logtail/README.md)
+
 ---
 
 ## 🏗️ 系统架构
