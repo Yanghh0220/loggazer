@@ -26,3 +26,11 @@ loggazer.db-shm
 vscode-extension/node_modules/
 vscode-extension/out/
 vscode-extension/package-lock.json
+
+# Rust 构建产物
+logpilot-parser/target/
+src-tauri/target/
+
+# Rust 索引文件
+*.loggazer
+.logtail-checkpoints/
