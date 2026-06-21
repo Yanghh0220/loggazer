@@ -790,7 +790,7 @@ input_col1, input_col2 = st.columns([1, 1])
 with input_col1:
     input_mode = st.radio(
         "输入方式",
-        ["📝 粘贴文本", "📁 上传文件"],
+        ["📝 粘贴文本", "📁 上传文件", "📂 打开本地文件"],
         horizontal=True,
         key="input_mode",
         label_visibility="collapsed",
@@ -928,7 +928,162 @@ if st.session_state.get("input_mode") == "📁 上传文件":
                 st.rerun()
 
     st.markdown("---")
-    st.caption("💡 或者切换到「📝 粘贴文本」模式直接粘贴日志内容")
+    st.caption("💡 或者切换到「📝 粘贴文本」或「📂 打开本地文件」模式")
+
+# ============================================
+# ✅ 优化点: 本地文件模式 — 带索引支持
+# ============================================
+elif st.session_state.get("input_mode") == "📂 打开本地文件":
+    local_file_path = st.text_input(
+        "日志文件路径",
+        placeholder="例如: C:\\logs\\build.log 或 /var/log/app.log",
+        key="local_file_path",
+        help="输入服务器上日志文件的绝对路径。首次打开会构建索引 (.loggazer)，再次打开秒级加载。",
+    )
+
+    if local_file_path:
+        import os as _os
+
+        if not _os.path.isfile(local_file_path):
+            st.error(f"❌ 文件不存在: {local_file_path}")
+        else:
+            file_size_mb = _os.path.getsize(local_file_path) / (1024 * 1024)
+
+            # 检查索引状态
+            index_info = {}
+            try:
+                with httpx.Client(timeout=5.0) as client:
+                    resp = client.get(
+                        f"{BACKEND_URL}/v1/index/status",
+                        params={"file_path": local_file_path},
+                    )
+                    if resp.is_success:
+                        index_info = resp.json()
+            except Exception:
+                index_info = {"has_index": False, "is_valid": False, "validation_msg": "Backend unavailable"}
+
+            # 索引状态 UI
+            has_idx = index_info.get("has_index", False)
+            is_valid = index_info.get("is_valid", False)
+            idx_stats = index_info.get("stats", {})
+
+            if has_idx and is_valid:
+                idx_total = idx_stats.get("total_lines", "?")
+                idx_size = idx_stats.get("index_size_bytes", 0) / (1024 * 1024)
+                st.markdown(f"""
+                <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;
+                            padding:8px 14px;background:#f0fdf4;border:1px solid #bbf7d0;
+                            border-radius:8px;font-size:0.82rem;">
+                    <span style="color:#16a34a;font-weight:600;">📋 索引命中 (Index Hit)</span>
+                    <span style="color:#737373;">·</span>
+                    <span style="color:#525252;">{idx_total:,} 行</span>
+                    <span style="color:#737373;">·</span>
+                    <span style="color:#525252;">索引 {idx_size:.1f} MB</span>
+                    <span style="color:#737373;">·</span>
+                    <span style="color:#16a34a;">⚡ 快速加载</span>
+                </div>
+                """, unsafe_allow_html=True)
+            elif has_idx and not is_valid:
+                st.markdown(f"""
+                <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;
+                            padding:8px 14px;background:#fffbeb;border:1px solid #fde68a;
+                            border-radius:8px;font-size:0.82rem;">
+                    <span style="color:#d97706;font-weight:600;">⚠️ 索引失效</span>
+                    <span style="color:#737373;">·</span>
+                    <span style="color:#525252;">{index_info.get("validation_msg", "Unknown")}</span>
+                    <span style="color:#737373;">·</span>
+                    <span style="color:#d97706;">将自动重建</span>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.markdown(f"""
+                <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;
+                            padding:8px 14px;background:#eff6ff;border:1px solid #bfdbfe;
+                            border-radius:8px;font-size:0.82rem;">
+                    <span style="color:#2563eb;font-weight:600;">🔨 首次打开</span>
+                    <span style="color:#737373;">·</span>
+                    <span style="color:#525252;">将构建索引 (~{max(1, file_size_mb * 0.3):.0f}s)</span>
+                </div>
+                """, unsafe_allow_html=True)
+
+            # 文件信息
+            st.markdown(f"""
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;
+                        padding:8px 14px;background:#f8fafc;border:1px solid #e2e8f0;
+                        border-radius:8px;font-size:0.82rem;">
+                <span style="color:#1e293b;font-weight:600;">📁 {_os.path.basename(local_file_path)}</span>
+                <span style="color:#737373;">·</span>
+                <span style="color:#525252;">{file_size_mb:.1f} MB</span>
+                <span style="color:#737373;">·</span>
+                <span style="color:#525252;">{_os.path.dirname(local_file_path)}</span>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # 加载按钮
+            col_a, col_b = st.columns([1, 1])
+            with col_a:
+                load_btn = st.button("🚀 加载并分析", type="primary", use_container_width=True,
+                                     key="local_load_btn")
+            with col_b:
+                rebuild_btn = st.button("🔄 强制重建索引", use_container_width=True,
+                                        key="local_rebuild_btn")
+
+            if load_btn or rebuild_btn:
+                force = bool(rebuild_btn)
+                with st.spinner("🔨 正在构建索引..." if force or not (has_idx and is_valid) else "📋 正在从索引加载..."):
+                    try:
+                        # 调用后端构建/验证索引
+                        with httpx.Client(timeout=300.0) as client:
+                            build_resp = client.post(
+                                f"{BACKEND_URL}/v1/index/build",
+                                json={"file_path": local_file_path, "force_rebuild": force},
+                            )
+                            if build_resp.is_success:
+                                build_data = build_resp.json()
+                                idx_status = build_data.get("status", "error")
+                                idx_stats_result = build_data.get("stats", {})
+
+                                # 显示构建结果
+                                if idx_status == "index_hit":
+                                    st.success(f"📋 索引命中！{idx_stats_result.get('total_lines', 0):,} 行，加载耗时可忽略")
+                                elif idx_status in ("index_built", "index_rebuilt"):
+                                    build_ms = idx_stats_result.get("build_duration_ms", 0)
+                                    st.success(
+                                        f"{'🔨 索引已构建' if idx_status == 'index_built' else '🔄 索引已重建'}！"
+                                        f"{idx_stats_result.get('total_lines', 0):,} 行，"
+                                        f"耗时 {build_ms / 1000:.1f}s，"
+                                        f"索引大小 {idx_stats_result.get('index_size_mb', 0):.1f} MB"
+                                    )
+                                    # 显示 level 分布
+                                    level_dist = idx_stats_result.get("level_distribution", {})
+                                    if level_dist:
+                                        dist_str = " · ".join(
+                                            f"{k}: {v:,}" for k, v in sorted(level_dist.items(), key=lambda x: -x[1])[:5]
+                                        )
+                                        st.caption(f"📊 日志级别分布: {dist_str}")
+
+                                # 将文件内容加载到 log_input 进行后续分析
+                                try:
+                                    with open(local_file_path, "r", encoding="utf-8", errors="replace") as f:
+                                        file_content = f.read()
+                                    # 如果文件太大，截断
+                                    max_content = 500_000  # 500KB for analysis
+                                    if len(file_content) > max_content:
+                                        st.warning(
+                                            f"⚠️ 文件较大 ({len(file_content) / 1024 / 1024:.1f} MB)，"
+                                            f"仅加载前 {max_content / 1024:.0f} KB 用于 AI 分析。"
+                                            f"索引中保存了完整的行级元数据。"
+                                        )
+                                        file_content = file_content[:max_content]
+                                    st.session_state["log_input"] = file_content
+                                    st.session_state["input_mode"] = "📝 粘贴文本"
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"读取文件失败: {str(e)[:200]}")
+                            else:
+                                st.error(f"索引操作失败: {build_resp.text[:500]}")
+                    except Exception as e:
+                        st.error(f"操作失败: {str(e)[:500]}")
 
 # ============================================
 # 日志输入（文本粘贴模式）

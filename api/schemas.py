@@ -198,3 +198,49 @@ class RateLimitHeaders(BaseModel):
     limit: int = Field(..., description="Maximum requests per window")
     remaining: int = Field(..., description="Remaining requests in current window")
     retry_after: int = Field(0, description="Seconds to wait before retry if limited")
+
+
+# ============================================================
+#  Index Endpoints (v1.0 — 日志索引机制)
+# ============================================================
+
+
+class IndexBuildRequest(BaseModel):
+    """POST /v1/index/build request body"""
+
+    file_path: str = Field(
+        ...,
+        min_length=1,
+        description="Absolute path to the log file to index",
+    )
+    force_rebuild: bool = Field(
+        False,
+        description="Force rebuild even if a valid index exists",
+    )
+
+
+class IndexStatusResponse(BaseModel):
+    """GET /v1/index/status response"""
+
+    file_path: str
+    has_index: bool
+    is_valid: bool
+    validation_msg: str
+    stats: dict = Field(default_factory=dict)
+
+
+class IndexBuildResponse(BaseModel):
+    """POST /v1/index/build response"""
+
+    status: str = Field(..., description="index_hit | index_built | index_rebuilt | error")
+    index_path: str | None = None
+    validation: str = ""
+    stats: dict = Field(default_factory=dict)
+    source_path: str
+
+
+class IndexListResponse(BaseModel):
+    """GET /v1/index/list response"""
+
+    indices: list[dict] = Field(default_factory=list)
+    count: int = 0

@@ -50,6 +50,10 @@ from api.schemas import (
     AnalyzeResponse,
     AnalyzeResponseMeta,
     HealthResponse,
+    IndexBuildRequest,
+    IndexBuildResponse,
+    IndexStatusResponse,
+    IndexListResponse,
 )
 from api.dependencies import (
     get_analyzer,
@@ -205,6 +209,7 @@ Analyze CI/CD build failure logs with AI-powered root cause analysis.
         {"name": "Health", "description": "Health checks and diagnostics"},
         {"name": "Clusters", "description": "Error clustering and trend insights"},
         {"name": "Platforms", "description": "Supported platform information"},
+        {"name": "Index", "description": "Log file index management (Parquet-based)"},
     ],
     lifespan=lifespan,
 )
@@ -408,6 +413,20 @@ async def health_check():
         checks["database"] = {"status": "ok", "engine": "sqlite3"}
     except Exception as e:
         checks["database"] = {"status": "error", "message": str(e)}
+        degraded = True
+
+    try:
+        import pyarrow
+        import pyarrow.parquet
+        checks["index_engine"] = {
+            "status": "ok",
+            "engine": "pyarrow",
+            "version": pyarrow.__version__,
+        }
+    except ImportError:
+        checks["index_engine"] = {"status": "warning", "message": "pyarrow not installed — log indexing disabled"}
+    except Exception as e:
+        checks["index_engine"] = {"status": "error", "message": str(e)}
         degraded = True
 
     overall = (
@@ -1317,6 +1336,180 @@ async def get_preprocess_status(task_id: str):
             ).model_dump(),
         )
     return _preprocess_tasks[task_id]
+
+
+# ============================================================
+#  Index Management Endpoints (v1.0 — Parquet-based log indexing)
+# ============================================================
+
+
+@app.post(
+    "/v1/index/build",
+    response_model=IndexBuildResponse,
+    tags=["Index"],
+    summary="Build or rebuild a log file index",
+    description="""
+Build a Parquet-based index file for a log file. The index stores per-line metadata
+(timestamp, level, byte offset, line number, line length, message preview).
+
+**Behavior:**
+- If a valid index already exists and `force_rebuild` is false, returns immediately with status `index_hit`
+- Otherwise, scans the log file and generates a `.loggazer` index file alongside it
+- Index writes are atomic (temp file + rename)
+
+**Index validation checks:**
+- Source file existence, size, mtime, SHA256 fingerprint
+- Schema version compatibility
+""",
+)
+async def build_index_endpoint(
+    request: IndexBuildRequest,
+    x_request_id: str = Depends(get_request_id),
+):
+    """Build or rebuild a log file index."""
+    try:
+        from log_indexer import open_log
+
+        file_path = request.file_path
+        if not os.path.isfile(file_path):
+            raise HTTPException(
+                status_code=404,
+                detail=ProblemDetail(
+                    type="https://loggazer.dev/errors/not-found",
+                    title="File Not Found",
+                    status=404,
+                    detail=f"Source file not found: {file_path}",
+                    instance="/v1/index/build",
+                ).model_dump(),
+            )
+
+        result = open_log(file_path, force_rebuild=request.force_rebuild)
+
+        return IndexBuildResponse(
+            status=result["status"],
+            index_path=result.get("index_path"),
+            validation=result.get("validation", ""),
+            stats=result.get("stats", {}),
+            source_path=result.get("source_path", file_path),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Index build failed: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=ProblemDetail(
+                type="https://loggazer.dev/errors/internal-error",
+                title="Index Build Error",
+                status=500,
+                detail=str(e)[:500],
+                instance="/v1/index/build",
+            ).model_dump(),
+        )
+
+
+@app.get(
+    "/v1/index/status",
+    response_model=IndexStatusResponse,
+    tags=["Index"],
+    summary="Check index status for a log file",
+    description="Returns whether a valid index exists for the given log file without triggering a scan.",
+)
+async def get_index_status_endpoint(
+    file_path: str,
+    x_request_id: str = Depends(get_request_id),
+):
+    """Check index status without triggering rebuild."""
+    try:
+        from log_parser import get_index_info
+
+        info = get_index_info(file_path)
+
+        return IndexStatusResponse(
+            file_path=file_path,
+            has_index=info["has_index"],
+            is_valid=info["is_valid"],
+            validation_msg=info["validation_msg"],
+            stats=info.get("stats", {}),
+        )
+    except Exception as e:
+        logger.error("Index status check failed: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=ProblemDetail(
+                type="https://loggazer.dev/errors/internal-error",
+                title="Index Status Error",
+                status=500,
+                detail=str(e)[:500],
+                instance="/v1/index/status",
+            ).model_dump(),
+        )
+
+
+@app.get(
+    "/v1/index/list",
+    response_model=IndexListResponse,
+    tags=["Index"],
+    summary="List all log indices in a directory",
+    description="Scans a directory for .loggazer index files and reports their validation status.",
+)
+async def list_indices_endpoint(
+    directory: str = ".",
+    x_request_id: str = Depends(get_request_id),
+):
+    """List all index files in a directory."""
+    try:
+        from log_indexer import list_indices
+
+        indices = list_indices(directory)
+        return IndexListResponse(
+            indices=indices,
+            count=len(indices),
+        )
+    except Exception as e:
+        logger.error("Index list failed: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=ProblemDetail(
+                type="https://loggazer.dev/errors/internal-error",
+                title="Index List Error",
+                status=500,
+                detail=str(e)[:500],
+                instance="/v1/index/list",
+            ).model_dump(),
+        )
+
+
+@app.delete(
+    "/v1/index",
+    tags=["Index"],
+    summary="Delete the index file for a log file",
+)
+async def delete_index_endpoint(
+    file_path: str,
+    x_request_id: str = Depends(get_request_id),
+):
+    """Delete the index file associated with a log file."""
+    try:
+        from log_indexer import delete_index
+
+        deleted = delete_index(file_path)
+        if deleted:
+            return {"status": "deleted", "message": f"Index deleted for {file_path}"}
+        else:
+            return {"status": "not_found", "message": f"No index exists for {file_path}"}
+    except Exception as e:
+        logger.error("Index delete failed: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=ProblemDetail(
+                type="https://loggazer.dev/errors/internal-error",
+                title="Index Delete Error",
+                status=500,
+                detail=str(e)[:500],
+                instance="/v1/index",
+            ).model_dump(),
+        )
 
 
 # ============================================================

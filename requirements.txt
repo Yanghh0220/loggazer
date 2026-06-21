@@ -25,6 +25,7 @@ pandas>=2.0.0            # 向量化数据分析（stats_analyzer / anomaly_dete
 flask-compress>=1.14     # Gzip 响应压缩（FastAPI 使用 GZipMiddleware 内置）
 gunicorn>=21.2.0         # 生产级 WSGI 服务器（部署命令见 api/main.py 顶部注释）
 cachetools>=5.3.0        # TTLCache 内存缓存（已在用，显式声明）
+pyarrow>=14.0.0          # Apache Arrow + Parquet (日志索引文件格式)
 
 # ---- MCP Protocol ----
 mcp>=1.0.0               # MCP (Model Context Protocol) Python SDK（FastMCP）

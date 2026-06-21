@@ -527,3 +527,172 @@ def parse_log(log_text: str) -> ParsedLog:
         truncated_log=truncated_log,
         is_truncated=is_truncated,
     )
+
+
+# ============================================================
+# ✅ 优化点: 基于索引的智能文件打开 — parse_log_from_file
+# ============================================================
+# v1.0 — 索引文件机制 (2026-06-21)
+#
+# 设计:
+#   1. 首次打开 → 扫描全文件 + 构建 Parquet 索引 (.loggazer)
+#   2. 再次打开 → 校验索引有效性 → 直接从索引加载元数据
+#   3. 索引失效 → 自动重建
+#   4. 原始文件内容仍通过 _read_file_chunked 加载 (向后兼容)
+#
+
+
+def parse_log_from_file(
+    file_path: str,
+    force_rebuild_index: bool = False,
+) -> tuple[ParsedLog, dict]:
+    """
+    从文件路径加载并解析日志，带索引支持。
+
+    这是面向文件的新推荐入口。与 parse_log() 的区别:
+    - parse_log(log_text): 接收文本内容，不做索引
+    - parse_log_from_file(file_path): 接收文件路径，自动管理索引
+
+    参数:
+        file_path: 日志文件路径
+        force_rebuild_index: 是否强制重建索引
+
+    返回:
+        (ParsedLog, index_info_dict)
+        index_info_dict:
+            index_status: "hit" | "built" | "rebuilt" | "unavailable" | "error"
+            index_path:   索引文件路径 (或 None)
+            index_stats:  索引统计信息 dict
+            index_validation: 索引验证结果描述
+    """
+    index_info: dict = {
+        "index_status": "unavailable",
+        "index_path": None,
+        "index_stats": {},
+        "index_validation": "",
+    }
+
+    # 尝试使用索引
+    try:
+        from log_indexer import open_log as index_open_log
+
+        index_result = index_open_log(
+            file_path,
+            force_rebuild=force_rebuild_index,
+        )
+        index_info["index_status"] = index_result["status"]
+        index_info["index_path"] = index_result["index_path"]
+        index_info["index_stats"] = index_result.get("stats", {})
+        index_info["index_validation"] = index_result.get("validation", "")
+
+        # 从索引获取统计信息 (如果可用)
+        if index_result["status"] in ("index_hit", "index_built", "index_rebuilt"):
+            idx_stats = index_result.get("stats", {})
+            total_lines = idx_stats.get("total_lines", 0)
+            level_dist = idx_stats.get("level_distribution", {})
+        else:
+            total_lines = 0
+            level_dist = {}
+    except ImportError:
+        logger = __import__("logging").getLogger(__name__)
+        logger.warning("log_indexer module not available, falling back to full parse")
+        index_info["index_status"] = "unavailable"
+        total_lines = 0
+        level_dist = {}
+    except Exception as e:
+        logger = __import__("logging").getLogger(__name__)
+        logger.warning("Index operation failed: %s, falling back to full parse", e)
+        index_info["index_status"] = "error"
+        total_lines = 0
+        level_dist = {}
+
+    # 读取文件内容 (始终需要，用于 parse_log 的完整分析)
+    with timer("log_parser:文件读取"):
+        log_text = _read_file_chunked(file_path)
+
+    # 解析日志
+    with timer("log_parser:解析总耗时"):
+        platform, error_lines, stats = _single_pass_scan(log_text)
+
+    with timer("log_parser:日志截断"):
+        original_length = len(log_text)
+        truncated_log = truncate_log(log_text)
+        is_truncated = len(truncated_log) < original_length
+
+    parsed = ParsedLog(
+        platform=platform,
+        error_lines=error_lines,
+        truncated_log=truncated_log,
+        is_truncated=is_truncated,
+    )
+
+    # 如果索引统计中的行数与实际解析的不一致，使用实际解析的
+    if total_lines > 0:
+        stats["total_lines_from_index"] = total_lines
+    if level_dist:
+        stats["level_distribution_from_index"] = level_dist
+
+    return parsed, index_info
+
+
+def get_index_info(file_path: str) -> dict:
+    """
+    获取日志文件的索引信息（不触发扫描）。
+
+    用于 UI 显示索引状态而不实际加载文件。
+
+    返回:
+        dict:
+            has_index:       bool   索引文件是否存在
+            is_valid:        bool   索引是否有效
+            validation_msg:  str    验证消息
+            stats:           dict   索引统计 (如可用)
+    """
+    try:
+        from log_indexer import (
+            validate_index,
+            index_path_for,
+            read_index_metadata,
+            load_index_stats,
+        )
+
+        index_path = index_path_for(file_path)
+
+        if not os.path.isfile(index_path):
+            return {
+                "has_index": False,
+                "is_valid": False,
+                "validation_msg": "No index exists",
+                "stats": {},
+            }
+
+        validation = validate_index(file_path, index_path)
+        if validation.is_valid:
+            stats = load_index_stats(index_path)
+            return {
+                "has_index": True,
+                "is_valid": True,
+                "validation_msg": "Index is valid",
+                "stats": stats,
+            }
+        else:
+            return {
+                "has_index": True,
+                "is_valid": False,
+                "validation_msg": validation.reason,
+                "stats": {},
+            }
+    except ImportError:
+        return {
+            "has_index": False,
+            "is_valid": False,
+            "validation_msg": "Index module unavailable",
+            "stats": {},
+        }
+    except Exception as e:
+        return {
+            "has_index": False,
+            "is_valid": False,
+            "validation_msg": f"Error: {str(e)[:200]}",
+            "stats": {},
+        }
