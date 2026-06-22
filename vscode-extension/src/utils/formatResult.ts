@@ -29,9 +29,14 @@ function mapLegacySafetyLevel(legacy?: string): { riskLevel: string; riskLabel: 
 function normalizeFixSuggestions(suggestions: FixSuggestion[]): FixSuggestion[] {
     if (!suggestions || !Array.isArray(suggestions)) return [];
     return suggestions.map((fix, idx) => {
-        // If new fields are present, trust them
+        // If new fields are present, trust them — but still strip HTML defensively
         if (fix.riskLevel && fix.riskLabel) {
-            return fix;
+            return {
+                ...fix,
+                title: stripHtml(fix.title || ''),
+                description: stripHtml(fix.description || ''),
+                command: stripHtml(fix.command || ''),
+            };
         }
         // Migrate from old safety_level
         const mapped = mapLegacySafetyLevel(fix.safety_level);
@@ -40,8 +45,23 @@ function normalizeFixSuggestions(suggestions: FixSuggestion[]): FixSuggestion[] 
             riskLevel: mapped.riskLevel as FixSuggestion['riskLevel'],
             riskLabel: mapped.riskLabel,
             recommended: false,
+            title: stripHtml(fix.title || ''),
+            description: stripHtml(fix.description || ''),
+            command: stripHtml(fix.command || ''),
         };
     });
+}
+
+// ---- HTML tag stripping (defense in depth) ----
+const HTML_TAG_RE = /<[^>]*>/g;
+
+function stripHtml(text: string): string {
+    if (!text) return '';
+    let cleaned = String(text).replace(HTML_TAG_RE, '');
+    cleaned = cleaned.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#039;/g, "'");
+    cleaned = cleaned.replace(HTML_TAG_RE, ''); // strip again after entity decode
+    cleaned = cleaned.replace(/\s+/g, ' ').trim();
+    return cleaned;
 }
 
 // ---- HTML escape ----
@@ -190,16 +210,17 @@ function buildFixSuggestionList(suggestions: FixSuggestion[]): string {
         const item = suggestions[i];
         const riskLevel = item.riskLevel || 'safe';
         const riskCfg = RISK_CONFIG[riskLevel] || RISK_CONFIG.safe;
-        const riskLabel = escapeHtml(item.riskLabel || '安全');
-        const title = escapeHtml(item.title || '方案');
-        const desc = escapeHtml(item.description || '');
+        // Defense: strip HTML from all text fields before escaping
+        const riskLabel = escapeHtml(stripHtml(item.riskLabel || '安全'));
+        const title = escapeHtml(stripHtml(item.title || '方案'));
+        const desc = escapeHtml(stripHtml(item.description || ''));
         const isRec = item.recommended || false;
 
         html += `
         <div class="fix-item">
             <div class="fix-header">
                 <span class="fix-num">${i + 1}</span>
-                <span class="fix-title">${title}</span>
+                <span class="fix-title" style="min-width:4em;word-break:break-word;overflow-wrap:break-word;">${title}</span>
                 <span class="fix-risk" style="color:${riskCfg.color};background:${riskCfg.bg};">
                     ${riskCfg.icon} ${riskLabel}
                 </span>
@@ -208,7 +229,7 @@ function buildFixSuggestionList(suggestions: FixSuggestion[]): string {
             <div class="fix-desc">${desc}</div>`;
 
         if (item.command) {
-            const escapedCmd = escapeHtml(item.command);
+            const escapedCmd = escapeHtml(stripHtml(item.command));
             html += `
             <div class="fix-command">
                 <code>${escapedCmd}</code>

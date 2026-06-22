@@ -92,11 +92,28 @@
     };
 
     // ---- Data compatibility layer ----
+    /**
+     * Strip HTML tags and decode common entities from text.
+     * Defense in depth: even if AI returns HTML in text fields, this cleans it.
+     */
+    function stripHtml(text) {
+        if (!text) return '';
+        var cleaned = String(text).replace(/<[^>]*>/g, '');
+        cleaned = cleaned.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#039;/g, "'");
+        cleaned = cleaned.replace(/<[^>]*>/g, ''); // strip again after entity decode
+        cleaned = cleaned.replace(/\s+/g, ' ').trim();
+        return cleaned;
+    }
+
     function normalizeFixSuggestions(suggestions) {
         if (!suggestions || !Array.isArray(suggestions)) return [];
         return suggestions.map(function (fix, idx) {
             // Already has new fields
             if (fix.riskLevel && (fix.riskLabel || fix.riskLevel)) {
+                // Defense: strip HTML from text fields even in new format
+                fix.title = stripHtml(fix.title || '');
+                fix.description = stripHtml(fix.description || '');
+                fix.command = stripHtml(fix.command || '');
                 return fix;
             }
             // Migrate from old safety_level
@@ -109,6 +126,10 @@
             fix.riskLevel = mapped.riskLevel;
             fix.riskLabel = mapped.riskLabel;
             fix.recommended = fix.recommended || false;
+            // Defense: strip HTML from all text fields
+            fix.title = stripHtml(fix.title || '');
+            fix.description = stripHtml(fix.description || '');
+            fix.command = stripHtml(fix.command || '');
             return fix;
         });
     }
@@ -220,7 +241,7 @@
             html += '<div class="fix-item">' +
                 '<div class="fix-header">' +
                 '<span class="fix-num">' + (i + 1) + '</span>' +
-                '<span class="fix-title">' + title + '</span>' +
+                '<span class="fix-title" style="min-width:4em;word-break:break-word;overflow-wrap:break-word;">' + title + '</span>' +
                 '<span class="fix-risk" style="color:' + riskCfg.color + ';background:' + riskCfg.bg + ';">' +
                 riskCfg.icon + ' ' + riskLabel +
                 '</span>' +

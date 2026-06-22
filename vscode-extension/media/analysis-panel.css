@@ -190,7 +190,10 @@ body {
     font-weight: 600;
     color: var(--text-primary);
     flex: 1;
-    min-width: 0;
+    /* 防御：防止容器宽度坍缩导致逐字符换行 */
+    min-width: 4em;
+    word-break: break-word;
+    overflow-wrap: break-word;
 }
 .fix-risk {
     font-size: 12px;

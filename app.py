@@ -1218,6 +1218,39 @@ def _show_backend_recovery_panel(mgr):
 
 # ---- 修复建议渲染辅助函数 ----
 
+import re as _re_html
+
+# 匹配所有 HTML/XML 标签（包括自闭合标签）
+_HTML_TAG_RE = _re_html.compile(r'<[^>]*>')
+
+# 匹配 HTML 实体（如 &lt; &gt; &amp; 等）
+_HTML_ENTITY_RE = _re_html.compile(r'&[#\w]+;')
+
+
+def _strip_html(text: str) -> str:
+    """
+    激进剥离 HTML 标签和实体，返回纯文本。
+
+    防御场景：
+    1. AI/缓存返回的 description/title 混入了 HTML 标签
+    2. 历史数据中存储了 HTML 格式的 fix_suggestions
+    3. 上游意外传入已转义的 HTML 实体
+
+    策略：先剥离标签，再解码常见的双层转义。
+    """
+    if not text:
+        return ""
+    # 1. 剥离所有 HTML 标签
+    cleaned = _HTML_TAG_RE.sub('', str(text))
+    # 2. 解码 HTML 实体 → 纯文本（处理 &lt; → < 等）
+    cleaned = cleaned.replace('&lt;', '<').replace('&gt;', '>').replace('&amp;', '&').replace('&quot;', '"').replace('&#039;', "'")
+    # 3. 再次剥离（防止解码后暴露的新标签）
+    cleaned = _HTML_TAG_RE.sub('', cleaned)
+    # 4. 合并多余空白
+    cleaned = _re_html.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned
+
+
 def _html_escape(text: str) -> str:
     """HTML 转义，防止 XSS 和渲染异常"""
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#039;")
@@ -1231,6 +1264,8 @@ def _normalize_fix_suggestions(result) -> list:
     1. Pydantic AnalysisResult 实例（新字段 riskLevel/riskLabel/recommended）
     2. dict 格式（旧字段 safety_level）
     3. AI 返回的 HTML 字符串（兜底提取）
+
+    防御策略：所有文本字段（title/description/command）强制剥离 HTML 标签。
     """
     suggestions = result.get("fix_suggestions", []) if isinstance(result, dict) else getattr(result, "fix_suggestions", [])
 
@@ -1244,46 +1279,54 @@ def _normalize_fix_suggestions(result) -> list:
         else:
             first_has_risk = hasattr(first, "riskLevel")
 
-        if first_has_risk:
-            return suggestions  # 已是新格式
-
-        # 旧格式兼容：将 safety_level 映射到 riskLevel
+        # 无论新格式还是旧格式，都强制剥离 HTML 并规范化
         normalized = []
         for s in suggestions:
-            item = dict(s) if isinstance(s, dict) else {
-                "title": getattr(s, "title", ""),
-                "description": getattr(s, "description", ""),
-                "command": getattr(s, "command", ""),
-                "riskLevel": "safe",
-                "riskLabel": "安全",
-                "recommended": False,
-            }
-            # 映射旧 safety_level → riskLevel
-            old_safety = item.get("safety_level", "safe") if isinstance(item, dict) else getattr(s, "safety_level", "safe")
-            level_map = {"safe": "safe", "review": "warning", "dangerous": "danger"}
-            label_map = {"safe": "安全", "review": "谨慎", "dangerous": "高风险"}
-            item["riskLevel"] = level_map.get(old_safety, "safe")
-            item["riskLabel"] = label_map.get(old_safety, "安全")
-            item["recommended"] = False  # 旧格式无此字段
+            if isinstance(s, dict):
+                item = dict(s)
+            else:
+                item = {
+                    "title": getattr(s, "title", ""),
+                    "description": getattr(s, "description", ""),
+                    "command": getattr(s, "command", ""),
+                    "riskLevel": getattr(s, "riskLevel", "safe"),
+                    "riskLabel": getattr(s, "riskLabel", "安全"),
+                    "recommended": getattr(s, "recommended", False),
+                }
+
+            # 防御：剥离所有文本字段中的 HTML 标签
+            item["title"] = _strip_html(item.get("title", ""))
+            item["description"] = _strip_html(item.get("description", ""))
+            item["command"] = _strip_html(item.get("command", ""))
+
+            # 确保有 riskLevel（处理旧格式）
+            if not item.get("riskLevel"):
+                old_safety = item.get("safety_level", "safe")
+                level_map = {"safe": "safe", "review": "warning", "dangerous": "danger"}
+                item["riskLevel"] = level_map.get(old_safety, "safe")
+            if not item.get("riskLabel"):
+                label_map = {"safe": "安全", "warning": "谨慎", "danger": "高风险"}
+                item["riskLabel"] = label_map.get(item.get("riskLevel", "safe"), "安全")
+            if "recommended" not in item:
+                item["recommended"] = False
             normalized.append(item)
         return normalized
 
-    # 兜底：如果是 HTML 字符串，用 DOMParser 提取（仅 JS 环境，Python 用正则）
+    # 兜底：如果是 HTML 字符串，用正则从 HTML 中提取 fix-item 内容
     raw = result.get("fix_suggestions", "") if isinstance(result, dict) else ""
     if isinstance(raw, str) and "<div" in raw:
-        # 用正则从 HTML 中提取 fix-item 内容
-        import re as _re
         items = []
-        blocks = _re.split(r'<div[^>]*class="fix-item"[^>]*>', raw)
+        blocks = _re_html.split(r'<div[^>]*class="fix-item"[^>]*>', raw)
         for idx, block in enumerate(blocks[1:], 1):  # 跳过第一个空分片
-            title_match = _re.search(r'class="fix-title"[^>]*>(.*?)</div>', block, _re.DOTALL)
-            desc_match = _re.search(r'class="fix-desc"[^>]*>(.*?)</div>', block, _re.DOTALL)
-            cmd_match = _re.search(r'<code>(.*?)</code>', block, _re.DOTALL)
-            title = _re.sub(r'<[^>]+>', '', title_match.group(1)).strip() if title_match else ""
-            desc = _re.sub(r'<[^>]+>', '', desc_match.group(1)).strip() if desc_match else ""
-            cmd = _re.sub(r'<[^>]+>', '', cmd_match.group(1)).strip() if cmd_match else ""
+            # 修复：title 是 <span> 标签，闭合标签应为 </span> 不是 </div>
+            title_match = _re_html.search(r'class="fix-title"[^>]*>\s*(.*?)\s*</span>', block, _re_html.DOTALL)
+            desc_match = _re_html.search(r'class="fix-desc"[^>]*>\s*(.*?)\s*</div>', block, _re_html.DOTALL)
+            cmd_match = _re_html.search(r'<code>\s*(.*?)\s*</code>', block, _re_html.DOTALL)
+            title = _strip_html(title_match.group(1)) if title_match else ""
+            desc = _strip_html(desc_match.group(1)) if desc_match else ""
+            cmd = _strip_html(cmd_match.group(1)) if cmd_match else ""
             # 去除开头的序号
-            title = _re.sub(r'^\d+\.?\s*', '', title)
+            title = _re_html.sub(r'^\d+\.?\s*', '', title)
             items.append({
                 "title": title or f"方案 {idx}",
                 "description": desc,
@@ -1310,17 +1353,25 @@ def _build_fix_suggestions_html(suggestions: list) -> str:
     """
     构建修复建议的 HTML（纯结构化渲染，禁止直接拼接用户输入）
 
-    使用 CSS 类名控制样式（在 style.css 中定义），不内联 style 字符串。
-    所有用户输入字段均通过 _html_escape() 转义。
+    重要设计决策：
+    - 不使用缩进的三引号 f-string（避免 Streamlit markdown 引擎将缩进解析为 code block）
+    - 所有用户输入字段先 _strip_html() 再 _html_escape()（双重防御）
+    - .fix-title 带有 style="min-width:4em;word-break:break-word" 防止逐字符换行
     """
     parts = ['<div class="fix-list">']
     for i, s in enumerate(suggestions, 1):
-        title = _html_escape(s.get("title", "无标题") if isinstance(s, dict) else getattr(s, "title", "无标题"))
-        desc = _html_escape(s.get("description", "") if isinstance(s, dict) else getattr(s, "description", ""))
+        # 防御：先剥离 HTML 再转义（即使上游已剥离，这里再做一层保险）
+        raw_title = s.get("title", "") if isinstance(s, dict) else getattr(s, "title", "")
+        raw_desc = s.get("description", "") if isinstance(s, dict) else getattr(s, "description", "")
+        raw_cmd = s.get("command", "") if isinstance(s, dict) else getattr(s, "command", "")
+        raw_label = s.get("riskLabel", "安全") if isinstance(s, dict) else getattr(s, "riskLabel", "安全")
+
+        title = _html_escape(_strip_html(raw_title)) or "方案"
+        desc = _html_escape(_strip_html(raw_desc))
+        risk_label = _html_escape(_strip_html(raw_label)) or "安全"
         risk_level = s.get("riskLevel", "safe") if isinstance(s, dict) else getattr(s, "riskLevel", "safe")
-        risk_label = _html_escape(s.get("riskLabel", "安全") if isinstance(s, dict) else getattr(s, "riskLabel", "安全"))
         recommended = s.get("recommended", False) if isinstance(s, dict) else getattr(s, "recommended", False)
-        command = s.get("command", "") if isinstance(s, dict) else getattr(s, "command", "")
+        command = _strip_html(raw_cmd)
 
         risk_cfg = _RISK_CONFIG.get(risk_level, _RISK_CONFIG["safe"])
         rec_html = '<span class="fix-recommend-badge">⭐ 推荐</span>' if recommended else ""
@@ -1328,24 +1379,25 @@ def _build_fix_suggestions_html(suggestions: list) -> str:
         if command:
             escaped_cmd = _html_escape(command)
             cmd_html = (
-                f'<div class="fix-command">'
+                '<div class="fix-command">'
                 f'<code>{escaped_cmd}</code>'
-                f'</div>'
+                '</div>'
             )
 
-        parts.append(f"""
-        <div class="fix-item">
-            <div class="fix-header">
-                <span class="fix-num">{i}</span>
-                <span class="fix-title">{title}</span>
-                <span class="fix-risk" style="color:{risk_cfg['color']};background:{risk_cfg['bg']};">
-                    {risk_cfg['icon']} {risk_label}
-                </span>
-                {rec_html}
-            </div>
-            <div class="fix-desc">{desc}</div>
-            {cmd_html}
-        </div>""")
+        # 注意：不缩进！避免 Streamlit markdown 引擎将缩进解析为 code block
+        parts.append(
+            '<div class="fix-item">'
+            '<div class="fix-header">'
+            f'<span class="fix-num">{i}</span>'
+            f'<span class="fix-title" style="min-width:4em;word-break:break-word;overflow-wrap:break-word;">{title}</span>'
+            f'<span class="fix-risk" style="color:{risk_cfg["color"]};background:{risk_cfg["bg"]};">'
+            f'{risk_cfg["icon"]} {risk_label}</span>'
+            f'{rec_html}'
+            '</div>'
+            f'<div class="fix-desc">{desc}</div>'
+            f'{cmd_html}'
+            '</div>'
+        )
 
     parts.append('</div>')
     return "".join(parts)
