@@ -153,7 +153,7 @@ class TestAnalysisResultValidation:
             ))
 
     def test_fix_suggestions_max_length(self):
-        """fix_suggestions 最多 3 个"""
+        """fix_suggestions 最多 4 个"""
         with pytest.raises(Exception):
             AnalysisResult.model_validate(self._make_valid_result(
                 fix_suggestions=[
@@ -161,9 +161,11 @@ class TestAnalysisResultValidation:
                         "title": f"方案{i}",
                         "description": f"描述{i}",
                         "command": f"echo {i}",
-                        "safety_level": "safe",
+                        "riskLevel": "safe",
+                        "riskLabel": "安全",
+                        "recommended": False,
                     }
-                    for i in range(4)
+                    for i in range(5)  # 5 > max_length=4
                 ],
             ))
 
@@ -594,7 +596,16 @@ class TestFallbackPaths:
             "error_summary": "测试",
             "error_detail": "ERR",
             "root_causes": [{"description": "原因", "probability": 100}],
-            "fix_suggestions": [],
+            "fix_suggestions": [
+                {
+                    "title": "测试方案",
+                    "description": "测试描述",
+                    "command": "echo test",
+                    "riskLevel": "safe",
+                    "riskLabel": "安全",
+                    "recommended": True,
+                },
+            ],
             "debug_commands": ["echo d"],
             "severity": "low",
             # 缺少 prevention 和 security_warning
@@ -606,7 +617,7 @@ class TestFallbackPaths:
         assert result.security_warning == ""
 
     def test_create_fallback_model(self):
-        """_create_fallback_model 创建安全的默认模型"""
+        """_create_fallback_model 创建安全的默认模型（现在包含非空的修复建议）"""
         from ai_engine import _create_fallback_model
 
         result = _create_fallback_model(AnalysisResult, "测试警告")
@@ -615,7 +626,8 @@ class TestFallbackPaths:
         assert result.security_warning == "测试警告"
         assert len(result.root_causes) == 1
         assert result.root_causes[0].probability == 100
-        assert result.fix_suggestions == []
+        assert len(result.fix_suggestions) >= 1
+        assert result.fix_suggestions[0].riskLevel == "safe"
         assert result.severity == "medium"
 
 

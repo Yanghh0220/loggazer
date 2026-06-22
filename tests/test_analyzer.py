@@ -46,7 +46,17 @@ def _make_mock_result(**overrides) -> AnalysisResult:
                 "title": "使用 --legacy-peer-deps",
                 "description": "跳过 peer dependency 检查",
                 "command": "npm install --legacy-peer-deps",
-                "safety_level": "safe",
+                "riskLevel": "safe",
+                "riskLabel": "安全",
+                "recommended": True,
+            },
+            {
+                "title": "升级依赖包版本",
+                "description": "升级到兼容的最新版本",
+                "command": "npm update",
+                "riskLevel": "safe",
+                "riskLabel": "安全",
+                "recommended": False,
             },
         ],
         "debug_commands": ["npm ls react", "npm why react"],
@@ -163,7 +173,7 @@ class TestAnalyzeLogNormal:
 
         assert result.error_summary == "npm 依赖解析冲突"
         assert result.severity == "medium"
-        assert len(result.fix_suggestions) == 1
+        assert len(result.fix_suggestions) >= 2
         assert len(result.debug_commands) == 2
 
 

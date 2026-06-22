@@ -27,7 +27,11 @@ export interface FixSuggestion {
     title: string;
     description: string;
     command: string;
-    safety_level: 'safe' | 'review' | 'dangerous';
+    riskLevel: 'safe' | 'warning' | 'danger';
+    riskLabel: string;
+    recommended: boolean;
+    // [DEPRECATED] 旧字段，向后兼容
+    safety_level?: 'safe' | 'review' | 'dangerous';
 }
 
 export interface AnalysisResult {

@@ -2,6 +2,9 @@
 //
 // Handles messages from the extension host and renders the analysis result.
 // Vanilla JS, no frameworks. Communicates via VS Code Webview API.
+//
+// v3.0: Fix suggestions use structured rendering with riskLevel/riskLabel/recommended.
+// No dangerouslySetInnerHTML pattern — all user content is escaped. CSS-driven styles.
 
 (function () {
     const vscode = acquireVsCodeApi();
@@ -11,9 +14,16 @@
     const loadingContainer = document.getElementById('loading-container');
     const loadingText = document.getElementById('loading-text');
 
+    // ---- Risk level visual config (CSS classes handle styling, inline only for dynamic color) ----
+    var RISK_CONFIG = {
+        safe:    { color: '#10b981', icon: '🟢', bg: '#ecfdf5' },
+        warning: { color: '#f59e0b', icon: '🟡', bg: '#fffbeb' },
+        danger:  { color: '#ef4444', icon: '🔴', bg: '#fef2f2' },
+    };
+
     // Listen for messages from the extension host
-    window.addEventListener('message', (event) => {
-        const message = event.data;
+    window.addEventListener('message', function (event) {
+        var message = event.data;
 
         switch (message.type) {
             case 'loading':
@@ -32,9 +42,6 @@
         }
     });
 
-    /**
-     * Show the loading spinner.
-     */
     function showLoading(text) {
         if (loadingContainer) {
             loadingContainer.style.display = 'block';
@@ -45,65 +52,74 @@
         }
     }
 
-    /**
-     * Hide the loading spinner.
-     */
     function hideLoading() {
         if (loadingContainer) {
             loadingContainer.style.display = 'none';
         }
     }
 
-    /**
-     * Render the analysis result in the container.
-     */
     function renderResult(response) {
         if (!resultContainer) return;
         resultContainer.innerHTML = formatAnalyzeResponse(response);
     }
 
-    /**
-     * Render an error message.
-     */
     function renderError(message) {
         if (!resultContainer) return;
-        resultContainer.innerHTML = `
-            <div class="error-display">
-                <strong>Analysis Failed</strong><br/>
-                ${escapeHtml(message)}
-            </div>`;
+        resultContainer.innerHTML =
+            '<div class="error-display">' +
+            '<strong>Analysis Failed</strong><br/>' +
+            escapeHtml(message) +
+            '</div>';
     }
 
     /**
-     * Copy a command to clipboard and notify the extension host.
+     * Copy a command to clipboard with visual feedback.
      */
-    window.copyCommand = function (command) {
+    window.copyCommand = function (command, btnEl) {
         navigator.clipboard.writeText(command).then(
-            () => {
+            function () {
                 vscode.postMessage({ command: 'copyCommand', text: command });
-                // Visual feedback
-                const buttons = document.querySelectorAll('.copy-btn');
-                buttons.forEach(btn => {
-                    if (btn.textContent.includes('Copy')) {
-                        btn.textContent = '✓ Copied!';
-                        setTimeout(() => { btn.textContent = '📋 Copy'; }, 2000);
-                    }
-                });
+                if (btnEl) {
+                    var orig = btnEl.textContent;
+                    btnEl.textContent = '✓ 已复制';
+                    setTimeout(function () { btnEl.textContent = orig; }, 2000);
+                }
             },
-            (err) => {
+            function (err) {
                 vscode.postMessage({ command: 'alert', text: 'Failed to copy: ' + err });
             }
         );
     };
 
+    // ---- Data compatibility layer ----
+    function normalizeFixSuggestions(suggestions) {
+        if (!suggestions || !Array.isArray(suggestions)) return [];
+        return suggestions.map(function (fix, idx) {
+            // Already has new fields
+            if (fix.riskLevel && (fix.riskLabel || fix.riskLevel)) {
+                return fix;
+            }
+            // Migrate from old safety_level
+            var map = {
+                safe:      { riskLevel: 'safe',    riskLabel: '安全' },
+                review:    { riskLevel: 'warning', riskLabel: '谨慎' },
+                dangerous: { riskLevel: 'danger',  riskLabel: '高风险' },
+            };
+            var mapped = map[fix.safety_level || 'safe'] || { riskLevel: 'safe', riskLabel: '安全' };
+            fix.riskLevel = mapped.riskLevel;
+            fix.riskLabel = mapped.riskLabel;
+            fix.recommended = fix.recommended || false;
+            return fix;
+        });
+    }
+
     /**
      * Format the full AnalyzeResponse into HTML.
-     * Mirrors the logic in formatResult.ts but runs client-side.
      */
     function formatAnalyzeResponse(response) {
-        const result = response.result;
-        const meta = response.meta;
-        let html = '';
+        var result = response.result;
+        var meta = response.meta;
+        var html = '';
 
         // Severity badge
         html += buildSeverityBadge(result.severity);
@@ -112,8 +128,8 @@
         html += '<details class="meta-details"><summary>📊 Analysis Metadata</summary><div class="meta-grid">';
         html += metaItem('Duration', meta.duration_ms.toFixed(0) + 'ms');
         html += metaItem('Cache', meta.cache_status);
-        html += metaItem('Model', meta.model_used);
-        html += metaItem('Platform', meta.platform_detected);
+        html += metaItem('Model', escapeHtml(meta.model_used));
+        html += metaItem('Platform', escapeHtml(meta.platform_detected));
         html += metaItem('Cost', '$' + meta.cost_usd.toFixed(6));
         html += '</div></details>';
 
@@ -129,7 +145,7 @@
         if (result.root_causes && result.root_causes.length > 0) {
             html += '<section class="result-section root-causes"><h2>🔍 Root Causes</h2>';
             result.root_causes.forEach(function (cause) {
-                const pct = Math.max(cause.probability, 2);
+                var pct = Math.max(cause.probability, 2);
                 html += '<div class="root-cause">';
                 html += '<div class="rc-header">';
                 html += '<span class="rc-probability">' + cause.probability + '%</span>';
@@ -141,21 +157,11 @@
             html += '</section>';
         }
 
-        // Fix Suggestions
+        // ---- Fix Suggestions (v3.0: structured component, no raw HTML) ----
         if (result.fix_suggestions && result.fix_suggestions.length > 0) {
+            var normalized = normalizeFixSuggestions(result.fix_suggestions);
             html += '<section class="result-section fix-suggestions"><h2>🛠️ Fix Suggestions</h2>';
-            result.fix_suggestions.forEach(function (fix) {
-                var safetyBadges = {
-                    safe: '<span class="badge badge-safe">🟢 Safe</span>',
-                    review: '<span class="badge badge-review">🟡 Review</span>',
-                    dangerous: '<span class="badge badge-dangerous">🔴 Dangerous</span>',
-                };
-                html += '<div class="fix-card">';
-                html += '<div class="fix-header"><h3>' + escapeHtml(fix.title) + '</h3>' + (safetyBadges[fix.safety_level] || '') + '</div>';
-                html += '<p class="fix-description">' + escapeHtml(fix.description) + '</p>';
-                html += buildCommandBlock(fix.command);
-                html += '</div>';
-            });
+            html += buildFixSuggestionList(normalized);
             html += '</section>';
         }
 
@@ -199,14 +205,55 @@
             '<span class="severity-label" style="color:' + cfg.color + ';">Severity: ' + cfg.label + '</span></div>';
     }
 
+    // ---- v3.0: Structured Fix Suggestion List (CSS classes, no inline style strings) ----
+    function buildFixSuggestionList(suggestions) {
+        var html = '<div class="fix-list">';
+        for (var i = 0; i < suggestions.length; i++) {
+            var item = suggestions[i];
+            var riskLevel = item.riskLevel || 'safe';
+            var riskCfg = RISK_CONFIG[riskLevel] || RISK_CONFIG.safe;
+            var riskLabel = escapeHtml(item.riskLabel || '安全');
+            var title = escapeHtml(item.title || '方案');
+            var desc = escapeHtml(item.description || '');
+            var isRec = item.recommended || false;
+
+            html += '<div class="fix-item">' +
+                '<div class="fix-header">' +
+                '<span class="fix-num">' + (i + 1) + '</span>' +
+                '<span class="fix-title">' + title + '</span>' +
+                '<span class="fix-risk" style="color:' + riskCfg.color + ';background:' + riskCfg.bg + ';">' +
+                riskCfg.icon + ' ' + riskLabel +
+                '</span>' +
+                (isRec ? '<span class="fix-recommend-badge">⭐ 推荐</span>' : '') +
+                '</div>' +
+                '<div class="fix-desc">' + desc + '</div>';
+
+            if (item.command) {
+                var escapedCmd = escapeHtml(item.command);
+                html += '<div class="fix-command">' +
+                    '<code>' + escapedCmd + '</code>' +
+                    '<button class="copy-btn fix-copy-btn" onclick="var b=this;copyCommand(' +
+                    JSON.stringify(item.command) + ',b);">📋 复制</button>' +
+                    '</div>';
+            }
+
+            html += '</div>';
+        }
+        html += '</div>';
+        return html;
+    }
+
     function buildCommandBlock(command) {
+        var escapedCmd = escapeHtml(command);
         return '<div class="command-block">' +
-            '<pre class="command-code"><code>' + escapeHtml(command) + '</code></pre>' +
-            '<button class="copy-btn" onclick="copyCommand(\'' + escapeAttr(command) + '\')">📋 Copy</button></div>';
+            '<pre class="command-code"><code>' + escapedCmd + '</code></pre>' +
+            '<button class="copy-btn" onclick="var b=this;copyCommand(' +
+            JSON.stringify(command) + ',b);">📋 复制</button></div>';
     }
 
     function metaItem(label, value) {
-        return '<div class="meta-item"><span class="meta-label">' + label + '</span><span class="meta-value">' + escapeHtml(value) + '</span></div>';
+        return '<div class="meta-item"><span class="meta-label">' + label +
+            '</span><span class="meta-value">' + value + '</span></div>';
     }
 
     function escapeHtml(text) {
@@ -216,13 +263,5 @@
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#039;');
-    }
-
-    function escapeAttr(text) {
-        return String(text)
-            .replace(/\\/g, '\\\\')
-            .replace(/'/g, "\\'")
-            .replace(/"/g, '\\"')
-            .replace(/\n/g, '\\n');
     }
 })();

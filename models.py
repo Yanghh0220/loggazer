@@ -111,48 +111,75 @@ class RootCause(BaseModel):
 
 
 class FixSuggestion(BaseModel):
-    """单条修复建议"""
+    """单条修复建议 — v3.0 增强版（riskLevel + recommended + command 可选）"""
 
     title: str = Field(
         ...,
         max_length=60,
-        description="修复方案标题",
+        description="修复方案标题（简洁，不超过30字）",
     )
     description: str = Field(
         ...,
         max_length=400,
-        description="详细解释和上下文",
+        description="详细说明（一句话讲清楚为什么）",
     )
     command: str = Field(
-        ...,
-        description="可执行的 bash 命令，将被安全校验",
+        default="",
+        description="可选，具体可执行的命令",
     )
+    riskLevel: Literal["safe", "warning", "danger"] = Field(
+        default="safe",
+        description="风险等级：safe=安全 / warning=谨慎 / danger=高风险",
+    )
+    riskLabel: str = Field(
+        default="安全",
+        description="风险标签中文：安全 / 谨慎 / 高风险",
+    )
+    recommended: bool = Field(
+        default=False,
+        description="是否为推荐方案",
+    )
+    # ---- 向后兼容：保留旧字段 safety_level（旧版调用方仍在使用）----
     safety_level: Literal["safe", "review", "dangerous"] = Field(
         default="safe",
-        description="命令安全等级",
+        description="[DEPRECATED] 命令安全等级，请使用 riskLevel",
     )
 
     @field_validator("command")
     @classmethod
     def validate_command(cls, v: str) -> str:
-        """命令级安全校验：语法解析 + 黑名单"""
+        """命令级安全校验：语法解析 + 黑名单（空命令跳过校验）"""
+        if not v or not v.strip():
+            return v  # 空命令是合法的，跳过校验
         return validate_command_safety(v)
 
     @model_validator(mode="after")
-    def auto_mark_review_level(self) -> "FixSuggestion":
+    def auto_mark_risk_level(self) -> "FixSuggestion":
         """
-        自动标记 review 级别的命令
+        自动标记风险等级
 
-        如果命令匹配 _REVIEW_PATTERNS（sudo / docker system prune / kill -9 等），
-        但 safety_level 被标记为 safe，则自动升级为 review。
-        dangerous 级别由 validate_command_safety 的 ValueError 触发 instructor 重试。
+        1. 如果命令匹配 _REVIEW_PATTERNS（sudo / docker system prune / kill -9 等），
+           且 riskLevel 为 safe → 自动升级为 warning
+        2. 同步 riskLabel 与 riskLevel
+        3. 同步旧字段 safety_level 与 riskLevel
         """
-        for pattern in _REVIEW_PATTERNS:
-            if pattern.search(self.command):
-                if self.safety_level == "safe":
-                    # 使用 object.__setattr__ 绕过 frozen 限制
-                    object.__setattr__(self, "safety_level", "review")
-                break
+        # 命令风险自动检测
+        if self.command and self.command.strip():
+            for pattern in _REVIEW_PATTERNS:
+                if pattern.search(self.command):
+                    if self.riskLevel == "safe":
+                        object.__setattr__(self, "riskLevel", "warning")
+                    break
+
+        # 同步 riskLabel
+        label_map = {"safe": "安全", "warning": "谨慎", "danger": "高风险"}
+        if not self.riskLabel or self.riskLabel not in label_map.values():
+            object.__setattr__(self, "riskLabel", label_map.get(self.riskLevel, "安全"))
+
+        # 向后兼容：同步旧字段 safety_level
+        compat_map = {"safe": "safe", "warning": "review", "danger": "dangerous"}
+        object.__setattr__(self, "safety_level", compat_map.get(self.riskLevel, "safe"))
+
         return self
 
     # ---- 向后兼容：支持 dict-style 访问 ----
@@ -160,10 +187,17 @@ class FixSuggestion(BaseModel):
     # 提供 __getitem__ / get 方法桥接，避免一次性重写所有访问点
 
     def __getitem__(self, key: str) -> Any:
+        # 兼容旧字段名 "safety_level" → 返回旧格式值
+        if key == "safety_level":
+            compat = {"safe": "safe", "warning": "review", "danger": "dangerous"}
+            return compat.get(self.riskLevel, "safe")
         return getattr(self, key)
 
     def get(self, key: str, default: Any = None) -> Any:
-        return getattr(self, key, default)
+        try:
+            return self[key]
+        except (AttributeError, KeyError):
+            return default
 
 
 class AnalysisResult(BaseModel):
@@ -191,8 +225,9 @@ class AnalysisResult(BaseModel):
     )
     fix_suggestions: list[FixSuggestion] = Field(
         ...,
-        max_length=3,
-        description="Top 3 修复建议，带可执行命令",
+        min_length=1,
+        max_length=4,
+        description="1-4 条修复建议，AI 要求至少 2 条，至少标记一个 recommended: true",
     )
     debug_commands: list[str] = Field(
         ...,

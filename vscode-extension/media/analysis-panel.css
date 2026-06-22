@@ -148,19 +148,127 @@ body {
     border-radius: 3px; transition: width 0.3s ease;
 }
 
-/* ---- Fix Cards ---- */
+/* ---- Fix Suggestions (v3.0: structured component) ---- */
+.fix-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+.fix-item {
+    padding: 16px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-primary);
+    transition: all 0.2s ease;
+}
+.fix-item:hover {
+    border-color: var(--accent);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+.fix-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+}
+.fix-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #ffffff;
+    font-size: 12px;
+    font-weight: 600;
+    flex-shrink: 0;
+}
+.fix-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    flex: 1;
+    min-width: 0;
+}
+.fix-risk {
+    font-size: 12px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-weight: 500;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.fix-recommend-badge {
+    font-size: 11px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: #dbeafe;
+    color: #1e40af;
+    font-weight: 500;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.fix-desc {
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.6;
+    padding-left: 30px;
+    word-break: break-word;
+}
+.fix-command {
+    margin-top: 8px;
+    padding: 8px 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+    font-size: 12px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+}
+.fix-command code {
+    font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--text-primary);
+    word-break: break-all;
+    flex: 1;
+    min-width: 0;
+}
+.fix-copy-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 12px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.fix-copy-btn:hover {
+    background: var(--bg-secondary);
+    border-color: var(--accent);
+}
+.fix-copy-btn:active {
+    background: var(--border-color);
+}
+
+/* ---- Old Fix Cards (deprecated, kept for compatibility) ---- */
 .fix-card {
     margin-bottom: 12px;
     padding: 12px;
     background: var(--bg-secondary);
     border-radius: 6px;
 }
-.fix-header {
-    display: flex; justify-content: space-between;
-    align-items: center; margin-bottom: 6px;
-}
-.fix-header h3 { font-size: 0.9rem; font-weight: 600; }
-.fix-description { font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 8px; }
 
 /* ---- Badges ---- */
 .badge {

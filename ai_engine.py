@@ -289,6 +289,7 @@ def _call_openai_compatible(
                 {"role": "user", "content": user_prompt},
             ],
             "temperature": effective_temp,
+            "response_format": {"type": "json_object"},
         }
 
         try:
@@ -660,7 +661,16 @@ def _create_fallback_model(model_class: type, warning: str) -> Any:
             root_causes=[
                 RootCause(description="日志格式可能不标准，AI 无法正确解析", probability=100)
             ],
-            fix_suggestions=[],
+            fix_suggestions=[
+                FixSuggestion(
+                    title="手动检查日志",
+                    description="由于 AI 解析失败，请手动审查日志内容以排查问题",
+                    command="",
+                    riskLevel="safe",
+                    riskLabel="安全",
+                    recommended=True,
+                ),
+            ],
             debug_commands=["echo '请手动检查日志'"],
             severity="medium",
             prevention=["建议检查日志格式是否标准"],

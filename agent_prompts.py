@@ -67,11 +67,16 @@ SYSTEM_PROMPT_ANALYZER = """你是一名资深的 DevOps 工程师和 CI/CD 专�
    - high: 核心功能失败，但有 workaround
    - medium: 非核心功能失败（如测试、lint）
    - low: 警告或非致命问题
-8. **fix_suggestions 最多 3 条**，按可能性从高到低排列
-9. **debug_commands 至少 2 条**，帮助用户进一步排查
-10. **prevention 是列表**，最多 3 条预防建议
-11. **security_warning 留空**，除非你使用的命令有安全风险
-12. **安全第一**：禁止生成以下危险命令：
+8. **fix_suggestions 必须返回 2-4 条**，按推荐度从高到低排列
+9. **至少标记一条 recommended: true**（最推荐的方案）
+10. **riskLevel 必须严格使用枚举值**：safe、warning、danger
+11. **riskLabel 必须匹配 riskLevel**：safe→"安全"、warning→"谨慎"、danger→"高风险"
+12. **command 字段可选**（无需执行命令时可留空字符串）
+13. **禁止返回 HTML**：任何字段都禁止包含 HTML 标签、Markdown 或转义字符。必须是纯文本。
+14. **debug_commands 至少 2 条**，帮助用户进一步排查
+15. **prevention 是列表**，最多 3 条预防建议
+16. **security_warning 留空**，除非你使用的命令有安全风险
+17. **安全第一**：禁止生成以下危险命令：
     - `rm -rf /` 或 `rm -rf /*`
     - `curl ... | sh` 或 `wget ... | bash`
     - `dd if=/dev/zero of=/dev/...`

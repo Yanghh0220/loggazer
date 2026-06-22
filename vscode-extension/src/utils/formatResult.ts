@@ -2,8 +2,57 @@
 //
 // Pure function: takes the API response and returns HTML string.
 // Used by the webview panel's JavaScript to render results dynamically.
+//
+// v3.0: Fix suggestions now use structured rendering — no raw HTML from AI is trusted.
+// All user content is escaped. riskLevel/riskLabel/recommended fields drive UI.
 
 import { AnalyzeResponse, AnalysisResult, RootCause, FixSuggestion } from '../api/loggazerClient';
+
+// ---- Risk level visual config ----
+const RISK_CONFIG: Record<string, { color: string; icon: string; bg: string }> = {
+    safe:    { color: '#10b981', icon: '🟢', bg: '#ecfdf5' },
+    warning: { color: '#f59e0b', icon: '🟡', bg: '#fffbeb' },
+    danger:  { color: '#ef4444', icon: '🔴', bg: '#fef2f2' },
+};
+
+// ---- Old safety_level → riskLevel mapping (backward compat) ----
+function mapLegacySafetyLevel(legacy?: string): { riskLevel: string; riskLabel: string } {
+    const map: Record<string, { riskLevel: string; riskLabel: string }> = {
+        safe:       { riskLevel: 'safe',    riskLabel: '安全' },
+        review:     { riskLevel: 'warning', riskLabel: '谨慎' },
+        dangerous:  { riskLevel: 'danger',  riskLabel: '高风险' },
+    };
+    return map[legacy || 'safe'] || { riskLevel: 'safe', riskLabel: '安全' };
+}
+
+// ---- Data compatibility layer ----
+function normalizeFixSuggestions(suggestions: FixSuggestion[]): FixSuggestion[] {
+    if (!suggestions || !Array.isArray(suggestions)) return [];
+    return suggestions.map((fix, idx) => {
+        // If new fields are present, trust them
+        if (fix.riskLevel && fix.riskLabel) {
+            return fix;
+        }
+        // Migrate from old safety_level
+        const mapped = mapLegacySafetyLevel(fix.safety_level);
+        return {
+            ...fix,
+            riskLevel: mapped.riskLevel as FixSuggestion['riskLevel'],
+            riskLabel: mapped.riskLabel,
+            recommended: false,
+        };
+    });
+}
+
+// ---- HTML escape ----
+function escapeHtml(text: string): string {
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
 
 /**
  * Format an API response into HTML for the analysis panel.
@@ -67,12 +116,11 @@ export function formatResultHtml(response: AnalyzeResponse): string {
         html += '</section>';
     }
 
-    // ---- Fix Suggestions ----
+    // ---- Fix Suggestions (v3.0: structured component, no raw HTML) ----
     if (result.fix_suggestions && result.fix_suggestions.length > 0) {
+        const normalized = normalizeFixSuggestions(result.fix_suggestions);
         html += '<section class="result-section fix-suggestions"><h2>🛠️ Fix Suggestions</h2>';
-        for (const fix of result.fix_suggestions) {
-            html += buildFixSuggestionCard(fix);
-        }
+        html += buildFixSuggestionList(normalized);
         html += '</section>';
     }
 
@@ -135,23 +183,43 @@ function buildRootCauseBar(cause: RootCause): string {
     </div>`;
 }
 
-function buildFixSuggestionCard(fix: FixSuggestion): string {
-    const safetyBadge: Record<string, string> = {
-        safe: '<span class="badge badge-safe">🟢 Safe</span>',
-        review: '<span class="badge badge-review">🟡 Review</span>',
-        dangerous: '<span class="badge badge-dangerous">🔴 Dangerous</span>',
-    };
-    const badge = safetyBadge[fix.safety_level] || '';
+// ---- v3.0: Structured Fix Suggestion List (CSS-driven, no inline style strings) ----
+function buildFixSuggestionList(suggestions: FixSuggestion[]): string {
+    let html = '<div class="fix-list">';
+    for (let i = 0; i < suggestions.length; i++) {
+        const item = suggestions[i];
+        const riskLevel = item.riskLevel || 'safe';
+        const riskCfg = RISK_CONFIG[riskLevel] || RISK_CONFIG.safe;
+        const riskLabel = escapeHtml(item.riskLabel || '安全');
+        const title = escapeHtml(item.title || '方案');
+        const desc = escapeHtml(item.description || '');
+        const isRec = item.recommended || false;
 
-    return `
-    <div class="fix-card">
-        <div class="fix-header">
-            <h3>${escapeHtml(fix.title)}</h3>
-            ${badge}
-        </div>
-        <p class="fix-description">${escapeHtml(fix.description)}</p>
-        ${buildCopyableCommand(fix.command)}
-    </div>`;
+        html += `
+        <div class="fix-item">
+            <div class="fix-header">
+                <span class="fix-num">${i + 1}</span>
+                <span class="fix-title">${title}</span>
+                <span class="fix-risk" style="color:${riskCfg.color};background:${riskCfg.bg};">
+                    ${riskCfg.icon} ${riskLabel}
+                </span>
+                ${isRec ? '<span class="fix-recommend-badge">⭐ 推荐</span>' : ''}
+            </div>
+            <div class="fix-desc">${desc}</div>`;
+
+        if (item.command) {
+            const escapedCmd = escapeHtml(item.command);
+            html += `
+            <div class="fix-command">
+                <code>${escapedCmd}</code>
+                <button class="copy-btn fix-copy-btn" onclick="copyCommand('${escapedCmd.replace(/'/g, "\\'")}')">📋 复制</button>
+            </div>`;
+        }
+
+        html += '</div>';
+    }
+    html += '</div>';
+    return html;
 }
 
 function buildCopyableCommand(command: string): string {
@@ -159,17 +227,8 @@ function buildCopyableCommand(command: string): string {
     return `
     <div class="command-block">
         <pre class="command-code"><code>${escapedCmd}</code></pre>
-        <button class="copy-btn" onclick="copyCommand(\`${escapedCmd.replace(/`/g, '\\`')}\`)">
-            📋 Copy
+        <button class="copy-btn" onclick="copyCommand('${escapedCmd.replace(/'/g, "\\'")}')">
+            📋 复制
         </button>
     </div>`;
-}
-
-function escapeHtml(text: string): string {
-    return text
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
 }

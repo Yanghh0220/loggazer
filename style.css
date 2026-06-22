@@ -117,13 +117,29 @@ button[data-testid="stSidebarCollapseControl"] {
     line-height: 1.7;
 }
 
-/* ====== 修复建议 ====== */
-.fix-item {
-    padding: 14px 0;
-    border-bottom: 1px solid #f0f0f0;
+/* ====== 修复建议 (v3.0: 结构化组件，CSS 驱动) ====== */
+.fix-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
 }
-.fix-item:last-child {
-    border-bottom: none;
+.fix-item {
+    padding: 16px;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    background: #fff;
+    transition: all 0.2s ease;
+}
+.fix-item:hover {
+    border-color: #3b82f6;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+.fix-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
 }
 .fix-num {
     display: inline-flex;
@@ -131,25 +147,122 @@ button[data-testid="stSidebarCollapseControl"] {
     justify-content: center;
     width: 22px;
     height: 22px;
-    border-radius: 5px;
-    background: #f5f5f5;
-    border: 1px solid #e5e5e5;
-    font-size: 0.75rem;
+    border-radius: 50%;
+    background: #3b82f6;
+    color: #fff;
+    font-size: 12px;
     font-weight: 600;
-    color: #525252;
-    margin-right: 8px;
+    flex-shrink: 0;
 }
 .fix-title {
-    font-size: 0.9rem;
+    font-size: 14px;
     font-weight: 600;
-    color: #1a1a1a;
+    color: #111827;
+    flex: 1;
+    min-width: 0;
+}
+.fix-risk {
+    font-size: 12px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-weight: 500;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.fix-recommend-badge {
+    font-size: 11px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: #dbeafe;
+    color: #1e40af;
+    font-weight: 500;
+    white-space: nowrap;
+    flex-shrink: 0;
 }
 .fix-desc {
-    font-size: 0.85rem;
-    color: #737373;
+    font-size: 13px;
+    color: #6b7280;
     line-height: 1.6;
-    margin-top: 6px;
     padding-left: 30px;
+    word-break: break-word;
+}
+.fix-command {
+    margin-top: 8px;
+    padding: 8px 12px;
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    font-family: 'JetBrains Mono', 'Consolas', monospace;
+    font-size: 12px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+}
+.fix-command code {
+    font-family: 'JetBrains Mono', 'Consolas', monospace;
+    font-size: 12px;
+    color: #1f2937;
+    word-break: break-all;
+    flex: 1;
+    min-width: 0;
+}
+.fix-command-wrapper {
+    margin: 8px 0;
+}
+.fix-command-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: #6b7280;
+    margin-bottom: 4px;
+}
+.fix-copy-btn, .copy-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 12px;
+    background: #fff;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    color: #374151;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.fix-copy-btn:hover, .copy-btn:hover {
+    background: #f3f4f6;
+    border-color: #9ca3af;
+}
+.fix-copy-btn:active, .copy-btn:active {
+    background: #e5e7eb;
+}
+
+/* 移动端响应式 */
+@media (max-width: 640px) {
+    .fix-item {
+        padding: 12px;
+    }
+    .fix-header {
+        gap: 6px;
+    }
+    .fix-title {
+        font-size: 13px;
+    }
+    .fix-desc {
+        font-size: 12px;
+        padding-left: 0;
+        margin-top: 6px;
+    }
+    .fix-command {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+    .fix-command code {
+        font-size: 11px;
+    }
 }
 
 /* ====== 按钮 ====== */

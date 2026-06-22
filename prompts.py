@@ -72,22 +72,28 @@ npm ERR! this command with --force or --legacy-peer-deps
     ],
     "fix_suggestions": [
         {
-            "title": "使用 --legacy-peer-deps 跳过 peer dependency 检查",
-            "description": "这是最快的解决方式，跳过严格的版本兼容性检查",
-            "command": "npm install --legacy-peer-deps",
-            "safety_level": "safe"
+            "title": "升级 @testing-library/react 到兼容 react 18 的版本",
+            "description": "从根本上解决版本冲突，这是推荐的解决方式",
+            "command": "npm install @testing-library/react@latest --save-dev",
+            "riskLevel": "safe",
+            "riskLabel": "安全",
+            "recommended": true
         },
         {
-            "title": "升级 @testing-library/react 到兼容 react 18 的版本",
-            "description": "从根本上解决版本冲突，推荐这种方式",
-            "command": "npm install @testing-library/react@latest --save-dev",
-            "safety_level": "safe"
+            "title": "使用 --legacy-peer-deps 跳过 peer dependency 检查",
+            "description": "这是最快的解决方式，跳过严格的版本兼容性检查，但可能隐藏潜在问题",
+            "command": "npm install --legacy-peer-deps",
+            "riskLevel": "warning",
+            "riskLabel": "谨慎",
+            "recommended": false
         },
         {
             "title": "降级 react 到 17.x 以匹配 testing-library",
-            "description": "如果项目允许使用旧版 react，这是一种保守的解决方案",
+            "description": "如果项目暂不允许使用 react 18，这是一种保守的解决方案",
             "command": "npm install react@17.0.2 react-dom@17.0.2",
-            "safety_level": "safe"
+            "riskLevel": "warning",
+            "riskLabel": "谨慎",
+            "recommended": false
         }
     ],
     "debug_commands": [
@@ -125,20 +131,31 @@ SYSTEM_PROMPT_TEMPLATE = """你是一名资深的 DevOps 工程师和 CI/CD 专�
 ## 硬性规则
 
 1. **只返回 JSON**，不要有任何其他文字、解释、markdown 标记
-2. **root_causes 中所有 probability 之和必须等于 100**，这是最重要的规则
-3. **所有命令必须是可直接复制执行的 bash 命令**
-4. **error_detail 保留英文原文**，方便用户对照原始日志
-5. **其他字段用中文**，且新手能看懂
-6. **如果日志信息不足**，诚实说明"日志信息不足，无法确定根因"，不要编造
-7. **severity 判断标准**：
+2. **禁止返回 HTML**：任何字段（title、description 等）都禁止包含 HTML 标签、Markdown、转义字符、或任何格式化代码。必须是纯文本。
+3. **root_causes 中所有 probability 之和必须等于 100**，这是最重要的规则
+4. **所有命令必须是可直接复制执行的 bash 命令**
+5. **error_detail 保留英文原文**，方便用户对照原始日志
+6. **其他字段用中文**，且新手能看懂
+7. **如果日志信息不足**，诚实说明"日志信息不足，无法确定根因"，不要编造
+8. **severity 判断标准**：
    - critical: 构建完全阻断，无法产出任何产物
    - high: 核心功能失败，但有 workaround
    - medium: 非核心功能失败（如测试、lint）
    - low: 警告或非致命问题
-8. **fix_suggestions 最多 3 条**，按可能性从高到低排列
-9. **debug_commands 至少 2 条**，帮助用户进一步排查
-10. **prevention 是列表**，最多 3 条预防建议
-11. **security_warning 留空**，除非你使用的命令有安全风险
+9. **fix_suggestions 必须返回 2-4 条**，按推荐度从高到低排列
+10. **至少标记一条 recommended: true**（最推荐的方案）
+11. **riskLevel 必须严格使用枚举值**：safe、warning、danger
+12. **riskLabel 必须匹配 riskLevel**：safe→"安全"、warning→"谨慎"、danger→"高风险"
+13. **command 字段可选**（无需执行命令时可留空字符串）
+14. **debug_commands 至少 2 条**，帮助用户进一步排查
+15. **prevention 是列表**，最多 3 条预防建议
+16. **security_warning 留空**，除非你使用的命令有安全风险
+17. **安全第一**：禁止生成以下危险命令：
+    - `rm -rf /` 或 `rm -rf /*`
+    - `curl ... | sh` 或 `wget ... | bash`
+    - `dd if=/dev/zero of=/dev/...`
+    - 任何格式化磁盘、覆写设备、反弹 shell 的命令
+    - 对 /etc、/usr、/bin 等系统目录的破坏性写操作
 """ + FEW_SHOT_EXAMPLE
 
 

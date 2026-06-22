@@ -1216,6 +1216,158 @@ def _show_backend_recovery_panel(mgr):
 #  P2-1②: 结果渲染函数（复用：正常展示 + 错误后展示缓存结果）
 # ============================================================
 
+# ---- 修复建议渲染辅助函数 ----
+
+def _html_escape(text: str) -> str:
+    """HTML 转义，防止 XSS 和渲染异常"""
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#039;")
+
+
+def _normalize_fix_suggestions(result) -> list:
+    """
+    数据兼容层：将原始数据规范化为统一的 fix_suggestions 列表
+
+    兼容三种格式：
+    1. Pydantic AnalysisResult 实例（新字段 riskLevel/riskLabel/recommended）
+    2. dict 格式（旧字段 safety_level）
+    3. AI 返回的 HTML 字符串（兜底提取）
+    """
+    suggestions = result.get("fix_suggestions", []) if isinstance(result, dict) else getattr(result, "fix_suggestions", [])
+
+    # 已是结构化列表
+    if isinstance(suggestions, list) and len(suggestions) > 0:
+        # 检查第一个元素是否有 riskLevel
+        first = suggestions[0]
+        first_has_risk = False
+        if isinstance(first, dict):
+            first_has_risk = "riskLevel" in first
+        else:
+            first_has_risk = hasattr(first, "riskLevel")
+
+        if first_has_risk:
+            return suggestions  # 已是新格式
+
+        # 旧格式兼容：将 safety_level 映射到 riskLevel
+        normalized = []
+        for s in suggestions:
+            item = dict(s) if isinstance(s, dict) else {
+                "title": getattr(s, "title", ""),
+                "description": getattr(s, "description", ""),
+                "command": getattr(s, "command", ""),
+                "riskLevel": "safe",
+                "riskLabel": "安全",
+                "recommended": False,
+            }
+            # 映射旧 safety_level → riskLevel
+            old_safety = item.get("safety_level", "safe") if isinstance(item, dict) else getattr(s, "safety_level", "safe")
+            level_map = {"safe": "safe", "review": "warning", "dangerous": "danger"}
+            label_map = {"safe": "安全", "review": "谨慎", "dangerous": "高风险"}
+            item["riskLevel"] = level_map.get(old_safety, "safe")
+            item["riskLabel"] = label_map.get(old_safety, "安全")
+            item["recommended"] = False  # 旧格式无此字段
+            normalized.append(item)
+        return normalized
+
+    # 兜底：如果是 HTML 字符串，用 DOMParser 提取（仅 JS 环境，Python 用正则）
+    raw = result.get("fix_suggestions", "") if isinstance(result, dict) else ""
+    if isinstance(raw, str) and "<div" in raw:
+        # 用正则从 HTML 中提取 fix-item 内容
+        import re as _re
+        items = []
+        blocks = _re.split(r'<div[^>]*class="fix-item"[^>]*>', raw)
+        for idx, block in enumerate(blocks[1:], 1):  # 跳过第一个空分片
+            title_match = _re.search(r'class="fix-title"[^>]*>(.*?)</div>', block, _re.DOTALL)
+            desc_match = _re.search(r'class="fix-desc"[^>]*>(.*?)</div>', block, _re.DOTALL)
+            cmd_match = _re.search(r'<code>(.*?)</code>', block, _re.DOTALL)
+            title = _re.sub(r'<[^>]+>', '', title_match.group(1)).strip() if title_match else ""
+            desc = _re.sub(r'<[^>]+>', '', desc_match.group(1)).strip() if desc_match else ""
+            cmd = _re.sub(r'<[^>]+>', '', cmd_match.group(1)).strip() if cmd_match else ""
+            # 去除开头的序号
+            title = _re.sub(r'^\d+\.?\s*', '', title)
+            items.append({
+                "title": title or f"方案 {idx}",
+                "description": desc,
+                "command": cmd,
+                "riskLevel": "safe",
+                "riskLabel": "安全",
+                "recommended": False,
+            })
+        if items:
+            return items
+
+    return []
+
+
+# 风险等级配色配置
+_RISK_CONFIG = {
+    "safe":    {"color": "#10b981", "icon": "🟢", "bg": "#ecfdf5"},
+    "warning": {"color": "#f59e0b", "icon": "🟡", "bg": "#fffbeb"},
+    "danger":  {"color": "#ef4444", "icon": "🔴", "bg": "#fef2f2"},
+}
+
+
+def _build_fix_suggestions_html(suggestions: list) -> str:
+    """
+    构建修复建议的 HTML（纯结构化渲染，禁止直接拼接用户输入）
+
+    使用 CSS 类名控制样式（在 style.css 中定义），不内联 style 字符串。
+    所有用户输入字段均通过 _html_escape() 转义。
+    """
+    parts = ['<div class="fix-list">']
+    for i, s in enumerate(suggestions, 1):
+        title = _html_escape(s.get("title", "无标题") if isinstance(s, dict) else getattr(s, "title", "无标题"))
+        desc = _html_escape(s.get("description", "") if isinstance(s, dict) else getattr(s, "description", ""))
+        risk_level = s.get("riskLevel", "safe") if isinstance(s, dict) else getattr(s, "riskLevel", "safe")
+        risk_label = _html_escape(s.get("riskLabel", "安全") if isinstance(s, dict) else getattr(s, "riskLabel", "安全"))
+        recommended = s.get("recommended", False) if isinstance(s, dict) else getattr(s, "recommended", False)
+        command = s.get("command", "") if isinstance(s, dict) else getattr(s, "command", "")
+
+        risk_cfg = _RISK_CONFIG.get(risk_level, _RISK_CONFIG["safe"])
+        rec_html = '<span class="fix-recommend-badge">⭐ 推荐</span>' if recommended else ""
+        cmd_html = ""
+        if command:
+            escaped_cmd = _html_escape(command)
+            cmd_html = (
+                f'<div class="fix-command">'
+                f'<code>{escaped_cmd}</code>'
+                f'</div>'
+            )
+
+        parts.append(f"""
+        <div class="fix-item">
+            <div class="fix-header">
+                <span class="fix-num">{i}</span>
+                <span class="fix-title">{title}</span>
+                <span class="fix-risk" style="color:{risk_cfg['color']};background:{risk_cfg['bg']};">
+                    {risk_cfg['icon']} {risk_label}
+                </span>
+                {rec_html}
+            </div>
+            <div class="fix-desc">{desc}</div>
+            {cmd_html}
+        </div>""")
+
+    parts.append('</div>')
+    return "".join(parts)
+
+
+def _render_command_with_copy(cmd: str, index: int):
+    """渲染命令块，带一键复制按钮"""
+    import streamlit.components.v1 as components
+    escaped_cmd = _html_escape(cmd)
+    script = (
+        '<div class="fix-command-wrapper" style="margin:8px 0;">'
+        f'<div class="fix-command-label">方案 {index} 的命令</div>'
+        '<div class="fix-command">'
+        f'<code>{escaped_cmd}</code>'
+        f'<button onclick="navigator.clipboard.writeText({json.dumps(cmd)});'
+        f'this.textContent=\'✓ 已复制\';setTimeout(()=>this.textContent=\'📋 复制\',2000);"'
+        f'class="fix-copy-btn">📋 复制</button>'
+        '</div></div>'
+    )
+    st.markdown(script, unsafe_allow_html=True)
+
+
 def _render_analysis_result(result, meta: dict | None = None):
     """渲染分析结果。result 可以是 AnalysisResult 实例或 dict。"""
     with timer("frontend:数据渲染", record=True):
@@ -1251,9 +1403,8 @@ def _render_analysis_result(result, meta: dict | None = None):
         st.markdown(f"""
         <div class="result-card result-card-left red">
             <div class="card-title">错误摘要</div>
-            <div class="card-body">{error_summary}</div>
-        </div>
-        """, unsafe_allow_html=True)
+            <div class="card-body">{_html_escape(error_summary)}</div>
+        </div>""", unsafe_allow_html=True)
 
         # ---- 关键错误信息 ----
         error_detail = result.get("error_detail", "无") if isinstance(result, dict) else getattr(result, "error_detail", "无")
@@ -1276,7 +1427,7 @@ def _render_analysis_result(result, meta: dict | None = None):
                 <div style="margin-bottom: 8px;">
                     <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 2px;">
                         <span style="font-weight: 600; min-width: 36px;">{prob}%</span>
-                        <span style="font-size: 0.9rem;">{desc}</span>
+                        <span style="font-size: 0.9rem;">{_html_escape(desc)}</span>
                     </div>
                     <div style="background: #e5e7eb; border-radius: 4px; height: 6px; overflow: hidden;">
                         <div style="background: #3b82f6; height: 100%; width: {bar_width}%; border-radius: 4px;"></div>
@@ -1291,27 +1442,9 @@ def _render_analysis_result(result, meta: dict | None = None):
             """, unsafe_allow_html=True)
 
         # ---- 修复建议 ----
-        suggestions = result.get("fix_suggestions", []) if isinstance(result, dict) else getattr(result, "fix_suggestions", [])
+        suggestions = _normalize_fix_suggestions(result)
         if suggestions:
-            items_html = ""
-            for i, s in enumerate(suggestions, 1):
-                title = s.get("title", "无标题") if isinstance(s, dict) else getattr(s, "title", "无标题")
-                desc = s.get("description", "") if isinstance(s, dict) else getattr(s, "description", "")
-                safety = s.get("safety_level", "safe") if isinstance(s, dict) else getattr(s, "safety_level", "safe")
-                safety_badge = {
-                    "safe": "🟢 安全",
-                    "review": "🟡 需审核",
-                    "dangerous": "🔴 危险",
-                }.get(safety, "")
-                items_html += f"""
-                <div class="fix-item">
-                    <div class="fix-title">
-                        <span class="fix-num">{i}</span>{title}
-                        <span style="font-size: 0.75rem; color: #6b7280; margin-left: 8px;">{safety_badge}</span>
-                    </div>
-                    <div class="fix-desc">{desc}</div>
-                </div>"""
-
+            items_html = _build_fix_suggestions_html(suggestions)
             st.markdown(f"""
             <div class="result-card result-card-left green">
                 <div class="card-title">修复建议</div>
@@ -1319,25 +1452,29 @@ def _render_analysis_result(result, meta: dict | None = None):
             </div>
             """, unsafe_allow_html=True)
 
-            # 修复命令
+            # 修复命令（独立展示，每条带复制按钮）
             for i, s in enumerate(suggestions, 1):
                 cmd = s.get("command", "") if isinstance(s, dict) else getattr(s, "command", "")
-                safety = s.get("safety_level", "safe") if isinstance(s, dict) else getattr(s, "safety_level", "safe")
                 if not cmd:
                     continue
-                if safety == "dangerous":
+                risk = s.get("riskLevel", "safe") if isinstance(s, dict) else getattr(s, "riskLevel", "safe")
+                is_rec = s.get("recommended", False) if isinstance(s, dict) else getattr(s, "recommended", False)
+                rec_badge = "⭐ 推荐 · " if is_rec else ""
+                if risk == "danger":
                     st.error(
-                        f"🚫 **方案 {i} 的命令已被安全系统拦截**\n\n"
-                        f"命令 `{cmd[:80]}...` 触发了危险模式匹配，"
+                        f"🚫 **{rec_badge}方案 {i} 的命令已被安全系统拦截**\n\n"
+                        f"命令 `{_html_escape(cmd[:80])}...` 触发了危险模式匹配，"
                         f"请人工审核后再决定是否执行。"
                     )
-                elif safety == "review":
+                elif risk == "warning":
                     st.warning(
-                        f"⚠️ **方案 {i} 的命令需要管理员权限 / 影响范围较大，请确认后再执行**"
+                        f"⚠️ **{rec_badge}方案 {i} 的命令需要管理员权限 / 影响范围较大，请确认后再执行**"
                     )
-                    st.code(cmd, language="bash")
+                    _render_command_with_copy(cmd, i)
                 else:
-                    st.code(cmd, language="bash")
+                    if is_rec:
+                        st.info(f"⭐ 推荐方案 {i} — 可直接执行")
+                    _render_command_with_copy(cmd, i)
 
         # ---- 排查命令 ----
         debug_cmds = result.get("debug_commands", []) if isinstance(result, dict) else getattr(result, "debug_commands", [])
@@ -1355,7 +1492,7 @@ def _render_analysis_result(result, meta: dict | None = None):
         if prevention:
             prevention_items = ""
             for tip in prevention:
-                prevention_items += f"<li>{tip}</li>"
+                prevention_items += f"<li>{_html_escape(tip)}</li>"
             st.markdown(f"""
             <div class="result-card result-card-left" style="border-left-color: #8b5cf6;">
                 <div class="card-title">预防建议</div>
