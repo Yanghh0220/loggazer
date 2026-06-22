@@ -1234,19 +1234,32 @@ def _strip_html(text: str) -> str:
     防御场景：
     1. AI/缓存返回的 description/title 混入了 HTML 标签
     2. 历史数据中存储了 HTML 格式的 fix_suggestions
-    3. 上游意外传入已转义的 HTML 实体
+    3. 上游意外传入已转义的 HTML 实体（含多层转义如 &amp;lt;）
 
-    策略：先剥离标签，再解码常见的双层转义。
+    策略：循环剥离标签 + 解码实体，直到文本稳定（处理多层转义）。
     """
     if not text:
         return ""
-    # 1. 剥离所有 HTML 标签
-    cleaned = _HTML_TAG_RE.sub('', str(text))
-    # 2. 解码 HTML 实体 → 纯文本（处理 &lt; → < 等）
-    cleaned = cleaned.replace('&lt;', '<').replace('&gt;', '>').replace('&amp;', '&').replace('&quot;', '"').replace('&#039;', "'")
-    # 3. 再次剥离（防止解码后暴露的新标签）
-    cleaned = _HTML_TAG_RE.sub('', cleaned)
-    # 4. 合并多余空白
+    cleaned = str(text)
+
+    # 循环剥离 + 解码，直到文本不再变化（处理 &amp;lt; → &lt; → < 多层转义）
+    for _ in range(5):  # 最多 5 轮，防止死循环
+        prev = cleaned
+        # 1. 剥离所有 HTML/XML 标签
+        cleaned = _HTML_TAG_RE.sub('', cleaned)
+        # 2. 解码常见 HTML 实体（&amp; 必须在 &lt;/&gt; 之前，防止 &amp;lt; → &lt; 残留）
+        cleaned = (
+            cleaned.replace('&amp;', '&')
+            .replace('&lt;', '<')
+            .replace('&gt;', '>')
+            .replace('&quot;', '"')
+            .replace('&#039;', "'")
+            .replace('&#x27;', "'")
+        )
+        if cleaned == prev:
+            break
+
+    # 最终合并多余空白
     cleaned = _re_html.sub(r'\s+', ' ', cleaned).strip()
     return cleaned
 
@@ -1389,7 +1402,7 @@ def _build_fix_suggestions_html(suggestions: list) -> str:
             '<div class="fix-item">'
             '<div class="fix-header">'
             f'<span class="fix-num">{i}</span>'
-            f'<span class="fix-title" style="min-width:4em;word-break:break-word;overflow-wrap:break-word;">{title}</span>'
+            f'<span class="fix-title" style="min-width:4em;max-width:100%;word-break:normal;overflow-wrap:break-word;white-space:normal;">{title}</span>'
             f'<span class="fix-risk" style="color:{risk_cfg["color"]};background:{risk_cfg["bg"]};">'
             f'{risk_cfg["icon"]} {risk_label}</span>'
             f'{rec_html}'
@@ -1444,27 +1457,28 @@ def _render_analysis_result(result, meta: dict | None = None):
             "low": "🟢",
         }
         severity_icon = severity_colors.get(severity, "⚪")
-        st.markdown(f"""
-        <div class="result-card result-card-left" style="border-left-color: #6b7280;">
-            <div class="card-title">严重程度 {severity_icon} {severity.upper()}</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(
+            '<div class="result-card result-card-left" style="border-left-color: #6b7280;">'
+            f'<div class="card-title">严重程度 {severity_icon} {severity.upper()}</div>'
+            '</div>',
+            unsafe_allow_html=True)
 
         # ---- 错误摘要 ----
         error_summary = result.get("error_summary", "无") if isinstance(result, dict) else getattr(result, "error_summary", "无")
-        st.markdown(f"""
-        <div class="result-card result-card-left red">
-            <div class="card-title">错误摘要</div>
-            <div class="card-body">{_html_escape(error_summary)}</div>
-        </div>""", unsafe_allow_html=True)
+        st.markdown(
+            '<div class="result-card result-card-left red">'
+            '<div class="card-title">错误摘要</div>'
+            f'<div class="card-body">{_html_escape(error_summary)}</div>'
+            '</div>',
+            unsafe_allow_html=True)
 
         # ---- 关键错误信息 ----
         error_detail = result.get("error_detail", "无") if isinstance(result, dict) else getattr(result, "error_detail", "无")
-        st.markdown("""
-        <div class="result-card result-card-left red">
-            <div class="card-title">关键错误信息</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(
+            '<div class="result-card result-card-left red">'
+            '<div class="card-title">关键错误信息</div>'
+            '</div>',
+            unsafe_allow_html=True)
         st.code(error_detail, language="bash")
 
         # ---- 根因分析（结构化展示） ----
@@ -1475,34 +1489,34 @@ def _render_analysis_result(result, meta: dict | None = None):
                 desc = cause.get("description", "") if isinstance(cause, dict) else getattr(cause, "description", "")
                 prob = cause.get("probability", 0) if isinstance(cause, dict) else getattr(cause, "probability", 0)
                 bar_width = max(prob, 2)
-                causes_html += f"""
-                <div style="margin-bottom: 8px;">
-                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 2px;">
-                        <span style="font-weight: 600; min-width: 36px;">{prob}%</span>
-                        <span style="font-size: 0.9rem;">{_html_escape(desc)}</span>
-                    </div>
-                    <div style="background: #e5e7eb; border-radius: 4px; height: 6px; overflow: hidden;">
-                        <div style="background: #3b82f6; height: 100%; width: {bar_width}%; border-radius: 4px;"></div>
-                    </div>
-                </div>"""
+                causes_html += (
+                    '<div style="margin-bottom: 8px;">'
+                    '<div style="display: flex; align-items: center; gap: 8px; margin-bottom: 2px;">'
+                    f'<span style="font-weight: 600; min-width: 36px;">{prob}%</span>'
+                    f'<span style="font-size: 0.9rem;">{_html_escape(desc)}</span>'
+                    '</div>'
+                    '<div style="background: #e5e7eb; border-radius: 4px; height: 6px; overflow: hidden;">'
+                    f'<div style="background: #3b82f6; height: 100%; width: {bar_width}%; border-radius: 4px;"></div>'
+                    '</div>'
+                    '</div>')
 
-            st.markdown(f"""
-            <div class="result-card result-card-left blue">
-                <div class="card-title">根因分析</div>
-                <div class="card-body">{causes_html}</div>
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown(
+                '<div class="result-card result-card-left blue">'
+                '<div class="card-title">根因分析</div>'
+                f'<div class="card-body">{causes_html}</div>'
+                '</div>',
+                unsafe_allow_html=True)
 
         # ---- 修复建议 ----
         suggestions = _normalize_fix_suggestions(result)
         if suggestions:
             items_html = _build_fix_suggestions_html(suggestions)
-            st.markdown(f"""
-            <div class="result-card result-card-left green">
-                <div class="card-title">修复建议</div>
-                {items_html}
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown(
+                '<div class="result-card result-card-left green">'
+                '<div class="card-title">修复建议</div>'
+                f'{items_html}'
+                '</div>',
+                unsafe_allow_html=True)
 
             # 修复命令（独立展示，每条带复制按钮）
             for i, s in enumerate(suggestions, 1):
@@ -1531,11 +1545,11 @@ def _render_analysis_result(result, meta: dict | None = None):
         # ---- 排查命令 ----
         debug_cmds = result.get("debug_commands", []) if isinstance(result, dict) else getattr(result, "debug_commands", [])
         if debug_cmds:
-            st.markdown("""
-            <div class="result-card result-card-left purple">
-                <div class="card-title">排查命令</div>
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown(
+                '<div class="result-card result-card-left purple">'
+                '<div class="card-title">排查命令</div>'
+                '</div>',
+                unsafe_allow_html=True)
             for cmd in debug_cmds:
                 st.code(cmd, language="bash")
 
@@ -1545,12 +1559,12 @@ def _render_analysis_result(result, meta: dict | None = None):
             prevention_items = ""
             for tip in prevention:
                 prevention_items += f"<li>{_html_escape(tip)}</li>"
-            st.markdown(f"""
-            <div class="result-card result-card-left" style="border-left-color: #8b5cf6;">
-                <div class="card-title">预防建议</div>
-                <div class="card-body"><ul style="margin: 0; padding-left: 1.2rem;">{prevention_items}</ul></div>
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown(
+                '<div class="result-card result-card-left" style="border-left-color: #8b5cf6;">'
+                '<div class="card-title">预防建议</div>'
+                f'<div class="card-body"><ul style="margin: 0; padding-left: 1.2rem;">{prevention_items}</ul></div>'
+                '</div>',
+                unsafe_allow_html=True)
 
 
 # ============================================================

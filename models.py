@@ -153,6 +153,33 @@ class FixSuggestion(BaseModel):
             return v  # 空命令是合法的，跳过校验
         return validate_command_safety(v)
 
+    @field_validator("title", "description")
+    @classmethod
+    def strip_html_from_text_fields(cls, v: str) -> str:
+        """
+        防御层 4：在 Pydantic 层强制剥离 HTML 标签
+
+        即使 AI 无视 Prompt 规则返回了 HTML，这一层也能兜底清理。
+        策略：移除所有 <...> 标签，解码常见实体，返回纯文本。
+        """
+        if not v:
+            return v
+        # 循环剥离，直到稳定（处理多层实体编码如 &amp;lt;）
+        cleaned = str(v)
+        for _ in range(5):
+            prev = cleaned
+            cleaned = re.sub(r'<[^>]*>', '', cleaned)
+            cleaned = (
+                cleaned.replace('&amp;', '&')
+                .replace('&lt;', '<')
+                .replace('&gt;', '>')
+                .replace('&quot;', '"')
+                .replace('&#039;', "'")
+            )
+            if cleaned == prev:
+                break
+        return cleaned.strip()
+
     @model_validator(mode="after")
     def auto_mark_risk_level(self) -> "FixSuggestion":
         """

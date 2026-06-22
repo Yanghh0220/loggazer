@@ -131,7 +131,8 @@ SYSTEM_PROMPT_TEMPLATE = """你是一名资深的 DevOps 工程师和 CI/CD 专�
 ## 硬性规则
 
 1. **只返回 JSON**，不要有任何其他文字、解释、markdown 标记
-2. **禁止返回 HTML**：任何字段（title、description 等）都禁止包含 HTML 标签、Markdown、转义字符、或任何格式化代码。必须是纯文本。
+2. **禁止返回 HTML**：任何字段（title、description、command 等）**绝对禁止**包含 HTML 标签（如 `<div>`、`<span>`、`<code>`、`</div>` 等）、HTML 实体（如 `&lt;`、`&gt;`、`&amp;`）、Markdown 格式、转义字符、或任何格式化代码。**必须是纯文本。违反此规则将导致输出无法渲染。**
+18. **纯文本验证**：再次强调 — title、description、command 字段中**不得出现 `<`、`>`、`&` 字符**（命令中合法的 `&&` 除外）。如果你在输出中包含 `</div>`、`<div class="...">`、`<code>` 等模式，你的输出将被系统拒绝。
 3. **root_causes 中所有 probability 之和必须等于 100**，这是最重要的规则
 4. **所有命令必须是可直接复制执行的 bash 命令**
 5. **error_detail 保留英文原文**，方便用户对照原始日志

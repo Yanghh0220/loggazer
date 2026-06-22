@@ -192,8 +192,10 @@ body {
     flex: 1;
     /* 防御：防止容器宽度坍缩导致逐字符换行 */
     min-width: 4em;
-    word-break: break-word;
+    max-width: 100%;
+    word-break: normal;
     overflow-wrap: break-word;
+    white-space: normal;
 }
 .fix-risk {
     font-size: 12px;

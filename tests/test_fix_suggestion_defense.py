@@ -111,8 +111,9 @@ class TestBuildFixSuggestionsHtml:
         ]
         html = _build_fix_suggestions_html(suggestions)
         assert 'min-width:4em' in html
-        assert 'word-break:break-word' in html
+        assert 'word-break:normal' in html
         assert 'overflow-wrap:break-word' in html
+        assert 'max-width:100%' in html
 
     def test_short_title_renders(self):
         suggestions = [
